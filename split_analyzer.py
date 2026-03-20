@@ -1,11 +1,16 @@
+"""Channel split analysis for MIDI playback.
+
+Implements a music21-first channel classifier with lightweight filtering and
+target selection tuned for stable in-game playback control.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, cast
-
 import mido
 
+from instrument_classifier import InstrumentClassifier
 from split_params import ParamsBundle, SplitClass, get_params
 
 
@@ -42,14 +47,11 @@ class SplitAnalysisResult:
 
 
 class SplitAnalyzer:
-    """Channel-centric split analyzer skeleton.
-
-    Current file provides structure and extension points.
-    Wire this into main controller after scoring rules are implemented.
-    """
+    """Analyze MIDI channels and produce stable split targets for playback."""
 
     def __init__(self, params: ParamsBundle | None = None) -> None:
         self.params = params or get_params("coherence_first")
+        self.classifier = InstrumentClassifier()
 
     def analyze_file(self, midi_path: str, max_targets: int | None = None) -> SplitAnalysisResult:
         midi = mido.MidiFile(midi_path)
@@ -66,11 +68,7 @@ class SplitAnalyzer:
         )
 
     def _collect_channel_features(self, midi: mido.MidiFile) -> list[ChannelFeatureSummary]:
-        """Collect per-channel note statistics.
-
-        This intentionally keeps only a minimal feature set for now.
-        Extend here with rhythm density, polyphony proxy, and drum-map ratios.
-        """
+        """Collect lightweight per-channel statistics for classification and ranking."""
         channel_notes: dict[int, list[int]] = {}
         channel_counts: dict[int, int] = {}
         channel_programs: dict[int, dict[int, int]] = {}
@@ -133,78 +131,30 @@ class SplitAnalyzer:
         return output
 
     def _classify_channel(self, feature: ChannelFeatureSummary) -> ChannelDecision:
-        """Classify one channel.
+        """Classify one channel with a simple music21-first strategy.
 
-        3-layer scoring: protocol + name + physical.
+        Rules:
+        1. Channel 10 is fixed to drum (handled in classifier).
+        2. Other channels use music21 program mapping.
+        3. If unresolved, mark as unknown and keep it visible.
         """
-        protocol_map: dict[SplitClass, float] = {
-            "drum": 0.0,
-            "bass": 0.0,
-            "guitar": 0.0,
-            "keys": 0.0,
-            "unknown": 0.0,
-        }
-        name_map: dict[SplitClass, float] = {
-            "drum": 0.0,
-            "bass": 0.0,
-            "guitar": 0.0,
-            "keys": 0.0,
-            "unknown": 0.0,
-        }
-        physical_map: dict[SplitClass, float] = {
-            "drum": 0.0,
-            "bass": 0.0,
-            "guitar": 0.0,
-            "keys": 0.0,
-            "unknown": 0.0,
-        }
+        program = 0
+        if feature.program_hist:
+            program = max(feature.program_hist.items(), key=lambda x: x[1])[0]
 
-        self._score_protocol(feature, protocol_map)
-        self._score_name(feature, name_map)
-        self._score_physical(feature, physical_map)
+        best, confidence = self.classifier.classify_channel(feature.channel_1_based, program)
 
         score_map: dict[SplitClass, float] = {
-            "drum": self._clamp01(
-                protocol_map["drum"] * self.params.weights.protocol
-                + name_map["drum"] * self.params.weights.name
-                + physical_map["drum"] * self.params.weights.physical
-            ),
-            "bass": self._clamp01(
-                protocol_map["bass"] * self.params.weights.protocol
-                + name_map["bass"] * self.params.weights.name
-                + physical_map["bass"] * self.params.weights.physical
-            ),
-            "guitar": self._clamp01(
-                protocol_map["guitar"] * self.params.weights.protocol
-                + name_map["guitar"] * self.params.weights.name
-                + physical_map["guitar"] * self.params.weights.physical
-            ),
-            "keys": self._clamp01(
-                protocol_map["keys"] * self.params.weights.protocol
-                + name_map["keys"] * self.params.weights.name
-                + physical_map["keys"] * self.params.weights.physical
-            ),
+            "drum": 0.0,
+            "bass": 0.0,
+            "guitar": 0.0,
+            "keys": 0.0,
             "unknown": 0.0,
         }
+        score_map[best] = max(0.0, min(1.0, confidence))
 
-        ranked = sorted(
-            ((k, v) for k, v in score_map.items() if k != "unknown"),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-        best_raw, best_score = ranked[0]
-        best = cast(SplitClass, best_raw)
-        second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-        margin = max(0.0, best_score - second_score)
-
-        min_margin = self.params.thresholds.min_margin
-        if feature.channel_1_based == self.params.protocol.drum_channel_1_based:
-            min_margin = self.params.thresholds.drum_margin_relax
-
-        confidence = best_score
-        if confidence < self.params.thresholds.min_confidence or margin < min_margin:
-            best = "unknown"
-            confidence = max(0.0, confidence)
+        # Keep sorting deterministic when confidence ties happen.
+        margin = score_map[best]
 
         return ChannelDecision(
             channel_1_based=feature.channel_1_based,
@@ -216,80 +166,10 @@ class SplitAnalyzer:
             score_map=score_map,
         )
 
-    def _score_protocol(self, feature: ChannelFeatureSummary, out: dict[SplitClass, float]) -> None:
-        if feature.channel_1_based == self.params.protocol.drum_channel_1_based:
-            out["drum"] += self.params.protocol.drum_channel_score
-
-        if feature.drum_pitch_ratio >= self.params.protocol.drum_note_ratio_strong:
-            out["drum"] += self.params.protocol.drum_note_ratio_bonus
-
-        program_total = sum(feature.program_hist.values())
-        if program_total <= 0:
-            return
-
-        bass_hits = self._range_hits(feature.program_hist, self.params.protocol.bass_program_range)
-        guitar_hits = self._range_hits(feature.program_hist, self.params.protocol.guitar_program_range)
-        keys_hits = self._range_hits(feature.program_hist, self.params.protocol.keys_program_range)
-
-        out["bass"] += self.params.protocol.program_bonus_bass * (bass_hits / program_total)
-        out["guitar"] += self.params.protocol.program_bonus_guitar * (guitar_hits / program_total)
-        out["keys"] += self.params.protocol.program_bonus_keys * (keys_hits / program_total)
-
-    def _score_name(self, feature: ChannelFeatureSummary, out: dict[SplitClass, float]) -> None:
-        tokens = set(feature.name_tokens)
-        if not tokens:
-            return
-
-        out["drum"] += self._token_score(tokens, self.params.names.drum_tokens)
-        out["bass"] += self._token_score(tokens, self.params.names.bass_tokens)
-        out["guitar"] += self._token_score(tokens, self.params.names.guitar_tokens)
-        out["keys"] += self._token_score(tokens, self.params.names.keys_tokens)
-
-        for key in ("drum", "bass", "guitar", "keys"):
-            out[key] = min(self.params.names.token_cap_per_class, out[key])
-
-    def _score_physical(self, feature: ChannelFeatureSummary, out: dict[SplitClass, float]) -> None:
-        avg_pitch = feature.avg_pitch
-        if avg_pitch is None:
-            return
-
-        if (
-            avg_pitch <= self.params.physical.bass_avg_pitch_max
-            and feature.low_pitch_ratio >= self.params.physical.bass_low_ratio_min
-        ):
-            out["bass"] += self.params.physical.bass_bonus
-
-        if (
-            self.params.physical.guitar_avg_pitch_min <= avg_pitch <= self.params.physical.guitar_avg_pitch_max
-            and feature.high_pitch_ratio <= self.params.physical.guitar_high_ratio_max
-        ):
-            out["guitar"] += self.params.physical.guitar_bonus
-
-        if self.params.physical.keys_avg_pitch_min <= avg_pitch <= self.params.physical.keys_avg_pitch_max:
-            out["keys"] += self.params.physical.keys_bonus
-
-        if feature.drum_pitch_ratio >= self.params.physical.drum_pitch_ratio_min:
-            out["drum"] += self.params.physical.drum_bonus
-
-    def _token_score(self, tokens: set[str], candidates: Iterable[str]) -> float:
-        hits = len(tokens & set(candidates))
-        if hits <= 0:
-            return 0.0
-        return hits * self.params.names.strong_hit_score
-
-    @staticmethod
-    def _range_hits(program_hist: dict[int, int], value_range: tuple[int, int]) -> int:
-        lo, hi = value_range
-        return sum(count for program, count in program_hist.items() if lo <= program <= hi)
-
     @staticmethod
     def _tokenize(text: str) -> set[str]:
         normalized = "".join(ch.lower() if ch.isalnum() else " " for ch in text)
         return {token for token in normalized.split() if token}
-
-    @staticmethod
-    def _clamp01(value: float) -> float:
-        return max(0.0, min(1.0, value))
 
     def _select_targets(
         self,
@@ -297,7 +177,7 @@ class SplitAnalyzer:
         feature_map: dict[int, ChannelFeatureSummary],
         limit: int,
     ) -> list[str]:
-        """Select channel targets with continuity guard and intra-class split support."""
+        """Select split targets with light filtering and optional intra-class seeding."""
         hard_limit = max(0, min(limit, self.params.limits.hard_max_outputs))
         if hard_limit <= 0:
             return []
@@ -336,31 +216,25 @@ class SplitAnalyzer:
         return [f"ch:{channel}" for channel in selected_channels[:hard_limit]]
 
     def _apply_continuity_guard(self, decisions: tuple[ChannelDecision, ...]) -> list[ChannelDecision]:
-        """Suppress weak fragmented branches to avoid over-splitting and choppy playback."""
+        """Remove only tiny-note-ratio branches, without class-based bias."""
         total_notes = sum(decision.note_count for decision in decisions)
         if total_notes <= 0:
             return []
 
         kept: list[ChannelDecision] = []
+        # Keep this lenient to avoid dropping legitimate sparse channels.
+        min_ratio = max(0.01, self.params.continuity.min_segment_note_ratio * 0.5)
         for decision in decisions:
             note_ratio = decision.note_count / total_notes
-            weak_by_ratio = note_ratio < self.params.continuity.min_segment_note_ratio
-            weak_by_conf = decision.confidence < self.params.continuity.weak_branch_merge_threshold
-            
-            # Only filter out unknown channels that are also very weak (both low ratio AND low confidence)
-            if decision.split_class == "unknown" and weak_by_ratio and weak_by_conf:
+            if note_ratio < min_ratio:
                 continue
-            
-            # Filter out classified channels that are weak
-            if decision.split_class != "unknown" and weak_by_ratio and weak_by_conf:
-                continue
-                
+
             kept.append(decision)
 
         if kept:
             return kept
 
-        # Always keep at least one best branch when all are weak.
+        # Guarantee at least one channel when all branches are weak.
         best = max(decisions, key=lambda d: (d.confidence, d.margin, d.note_count))
         return [best]
 

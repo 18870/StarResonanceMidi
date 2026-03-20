@@ -1,3 +1,9 @@
+"""Flet UI layer for StarResonanceMidi.
+
+This module builds interactive views and exposes typed hooks/update APIs
+consumed by the application controller.
+"""
+
 import json
 import locale as py_locale
 from pathlib import Path
@@ -124,7 +130,7 @@ class StarResonanceMidiGui:
         try:
             window_obj.icon = str(icon_path)
         except Exception:
-            # Keep UI usable even if icon assignment is unsupported on this platform/version.
+            # Ignore icon errors on unsupported runtimes.
             pass
 
     # ----- Public update APIs -----
@@ -134,7 +140,7 @@ class StarResonanceMidiGui:
             self.btn_play.icon = ft.Icons.STOP if is_playing else ft.Icons.PLAY_ARROW
         if self.switch_split_enabled is not None:
             self.switch_split_enabled.disabled = bool(is_playing)
-        # Keep split target selection stable while current song is playing.
+        # Lock split-role toggles during playback.
         self.split_targets_locked = bool(is_playing)
         self._refresh_split_role_buttons()
 

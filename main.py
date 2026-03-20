@@ -1,3 +1,9 @@
+"""Application controller entrypoint for StarResonanceMidi.
+
+Coordinates UI events, playlist state, split analysis, and playback engine
+callbacks with thread-safe UI updates.
+"""
+
 import asyncio
 import threading
 import time
@@ -76,7 +82,7 @@ class AppController:
 
     def _bind_engine_callbacks(self) -> None:
         """Bind engine callbacks to UI-safe handlers."""
-        # Playback state is owned by the controller to avoid flicker between tracks.
+        # Controller owns playback state to avoid UI flicker between tracks.
         self.engine.on_progress = self._queue_progress_update
         self.engine.on_error = lambda message: self._run_on_ui(self._show_message, self._tr("msg_engine_error", message), "error")
 
@@ -103,7 +109,7 @@ class AppController:
             except Exception:
                 pass
 
-        # Last-resort fallback for runtimes without thread-dispatch helpers.
+        # Fallback for runtimes without thread-dispatch helpers.
         fn(*args)
 
     def _start_emergency_stop_listener(self) -> None:
@@ -120,7 +126,7 @@ class AppController:
             self._hotkey_listener.daemon = True
             self._hotkey_listener.start()
         except Exception:
-            # Listener may fail due to system permissions; user should grant accessibility permission.
+            # Listener may fail if accessibility permission is missing.
             self._hotkey_listener = None
 
     def _request_stop(self, message_key: str) -> None:
@@ -545,13 +551,11 @@ class AppController:
         """Build key->label map from analyzer output for selected channel targets."""
         selected = set(analysis.selected_targets)
         labels: dict[str, str] = {}
-        min_confidence = self.split_analyzer.params.thresholds.min_confidence
         for decision in analysis.decisions:
             key = f"ch:{decision.channel_1_based}"
             if key in selected:
                 channel_text = self._tr("play_channel_short_label", decision.channel_1_based)
-                class_key = decision.split_class if decision.confidence >= min_confidence else "unknown"
-                class_text = self._tr(f"play_class_{class_key}")
+                class_text = self._tr(f"play_class_{decision.split_class}")
                 labels[key] = f"{channel_text} · {class_text}"
         return labels
 

@@ -1,3 +1,9 @@
+"""Validate locale key consistency.
+
+Usage:
+    python scripts/check_locales.py
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +15,7 @@ LOCALES_PATH = Path(__file__).resolve().parents[1] / "locales.json"
 
 
 def load_locales(path: Path) -> Dict[str, Dict[str, str]]:
+    """Load and type-validate locale JSON structure."""
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -34,10 +41,12 @@ def load_locales(path: Path) -> Dict[str, Dict[str, str]]:
 
 
 def sorted_keys(mapping: Dict[str, str]) -> Set[str]:
+    """Return locale key set for comparison."""
     return set(mapping.keys())
 
 
 def main() -> int:
+    """Run locale consistency checks and return an exit code."""
     if not LOCALES_PATH.exists():
         print(f"ERROR: locales file not found: {LOCALES_PATH}")
         return 1

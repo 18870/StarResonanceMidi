@@ -1,3 +1,8 @@
+"""Configuration model for split analyzer behavior.
+
+Defines immutable parameter bundles and preset profiles used by the analyzer.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

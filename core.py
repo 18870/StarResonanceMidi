@@ -1,3 +1,9 @@
+"""MIDI playback engine and track-role analysis primitives.
+
+This module contains low-level playback behavior, keyboard output mapping,
+and optional track/channel role analysis structures used by the controller.
+"""
+
 import mido
 import random
 import threading
@@ -175,7 +181,7 @@ class MidiRoleAnalyzer:
         if note_events == 0 and not program_hist and not track_name.strip():
             return None
 
-        # Channel-based drum hint (GM channel 10 -> index 9).
+        # GM drum hint: channel 10 (index 9).
         total_channel_events = sum(channel_hist.values())
         drum_ratio = (channel_hist.get(9, 0) / total_channel_events) if total_channel_events > 0 else 0.0
         scores["drum"] += 0.85 * drum_ratio
@@ -197,7 +203,7 @@ class MidiRoleAnalyzer:
             scores["guitar"] += 0.80 * (guitar_hits / total_program_events)
             scores["keyboard"] += 0.65 * (keyboard_hits / total_program_events)
 
-        # Register-range hints from played note distribution.
+        # Note-range hints from played notes.
         if note_values:
             avg_note = sum(note_values) / len(note_values)
             low_ratio = sum(1 for n in note_values if n <= 52) / len(note_values)
@@ -226,7 +232,7 @@ class MidiRoleAnalyzer:
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
         margin = max(0.0, best_score - second_score)
 
-        # Track-level conflict ratio from program dispersion across role ranges.
+        # Conflict ratio from role-bucket dispersion.
         role_buckets = {
             "bass": sum(v for p, v in program_hist.items() if 32 <= p <= 39),
             "guitar": sum(v for p, v in program_hist.items() if 24 <= p <= 31),
@@ -241,7 +247,7 @@ class MidiRoleAnalyzer:
             dominant = bucket_values[0]
             conflict_ratio = 1.0 - (dominant / bucket_total)
 
-        # Instability penalties for tracks that likely mix instruments.
+        # Penalize likely multi-instrument tracks.
         if total_program_events > 0:
             dominant_program_ratio = max(program_hist.values()) / total_program_events
             if len(program_hist) >= 3 and dominant_program_ratio < 0.60:
