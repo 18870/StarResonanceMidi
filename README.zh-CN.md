@@ -45,12 +45,6 @@ python main.py
 ```
 
 
-## 构建需求
-
-- Python 3.12+
-- 依赖包：`nuitka`, `ordered-set`, `zstandard`, `pillow`
-
-
 ## 翻译贡献说明
 
 欢迎提交其他语言版本的翻译。

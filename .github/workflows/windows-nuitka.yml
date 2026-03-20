@@ -56,6 +56,8 @@ jobs:
             --windows-console-mode=disable `
             --windows-product-name="StarResonanceMidi" `
             --windows-file-description="StarResonanceMidi MIDI-to-keyboard player" `
+            --product-version="1.0.0.0" `
+            --file-version="1.0.0.0" `
             $iconArg `
             --output-filename=StarResonanceMidi.exe `
             --output-dir=build/onefile `

@@ -46,12 +46,6 @@ python main.py
 ```
 
 
-## Build Requirements
-
-- Python 3.12+
-- Packages used by this project: `nuitka`, `ordered-set`, `zstandard`, `pillow`
-
-
 ## Translation Contributions
 
 Contributions for additional languages are welcome.

@@ -45,12 +45,6 @@ python main.py
 ```
 
 
-## ビルド要件
-
-- Python 3.12+
-- 依存パッケージ：`nuitka`, `ordered-set`, `zstandard`, `pillow`
-
-
 ## 翻訳コントリビューション
 
 他言語への翻訳コントリビューションを歓迎します。
