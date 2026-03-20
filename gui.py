@@ -32,6 +32,7 @@ UiEventHandler = Callable[[Any], None]
 ValueChangeHandler = Callable[[float], None]
 TrackSelectHandler = Callable[[str], None]
 ModeChangeHandler = Callable[[str], None]
+BoolChangeHandler = Callable[[bool], None]
 RoleToggleHandler = Callable[[str, bool], None]
 TracksRemoveHandler = Callable[[list[str]], None]
 StatusLevel = Literal["info", "warning", "error"]
@@ -42,14 +43,8 @@ STATUS_COLOR_MAP: dict[StatusLevel, str] = {
 }
 
 
-class HarmonyGui:
+class StarResonanceMidiGui:
     """Build and update application UI components."""
-
-    GOOGLE_FONT_URLS: dict[str, str] = {
-        "NotoSans": "https://fonts.gstatic.com/s/notosans/v39/o-0IIpQlx3QUlC5A4PNb4j5Ba_2c7A.woff2",
-        "NotoSansSC": "https://fonts.gstatic.com/s/notosanssc/v39/k3kJo84MPvpLmixcA63oeALRLoKI.woff2",
-        "NotoSansJP": "https://fonts.gstatic.com/s/notosansjp/v55/-F6jfjtqLzI2JPCgQBnw7HFQogg.woff2",
-    }
 
     def __init__(self, page: ft.Page):
         """Initialize page setup, hooks, and view tree."""
@@ -60,7 +55,6 @@ class HarmonyGui:
         self.page.window.width = 1000
         self.page.window.height = 800
         self._apply_window_icon()
-        self.page.fonts = dict(self.GOOGLE_FONT_URLS)
         self.page.theme = ft.Theme(color_scheme_seed="#375ca8")
 
         self.current_lang = self._detect_initial_language()
@@ -77,6 +71,7 @@ class HarmonyGui:
         self.on_prev_click: UiEventHandler | None = None
         self.on_next_click: UiEventHandler | None = None
         self.on_play_mode_change: ModeChangeHandler | None = None
+        self.on_split_toggle: BoolChangeHandler | None = None
         self.on_split_role_toggle: RoleToggleHandler | None = None
 
         # Internal control refs used by update APIs.
@@ -86,8 +81,10 @@ class HarmonyGui:
         self.btn_mode_normal: ft.Button | None = None
         self.btn_mode_repeat_one: ft.Button | None = None
         self.btn_mode_repeat_all: ft.Button | None = None
+        self.switch_split_enabled: ft.Switch | None = None
         self.split_role_row: ft.Row | None = None
         self.current_play_mode: str = "normal"
+        self.split_enabled: bool = True
         self.split_target_buttons: dict[str, ft.Button] = {}
         self.split_target_labels: dict[str, str] = {}
         self.enabled_split_roles: set[str] = set()
@@ -135,6 +132,8 @@ class HarmonyGui:
         """Toggle play button icon between play/stop."""
         if self.btn_play:
             self.btn_play.icon = ft.Icons.STOP if is_playing else ft.Icons.PLAY_ARROW
+        if self.switch_split_enabled is not None:
+            self.switch_split_enabled.disabled = bool(is_playing)
         # Keep split target selection stable while current song is playing.
         self.split_targets_locked = bool(is_playing)
         self._refresh_split_role_buttons()
@@ -166,6 +165,13 @@ class HarmonyGui:
         """Sync split targets and enabled state from controller."""
         self.split_target_labels = dict(target_labels)
         self.enabled_split_roles = set(enabled_roles)
+        self._refresh_split_role_buttons()
+
+    def set_split_enabled(self, enabled: bool) -> None:
+        """Sync split master toggle state from controller."""
+        self.split_enabled = bool(enabled)
+        if self.switch_split_enabled is not None:
+            self.switch_split_enabled.value = self.split_enabled
         self._refresh_split_role_buttons()
 
     def _refresh_play_mode_buttons(self) -> None:
@@ -209,7 +215,7 @@ class HarmonyGui:
             button = ft.Button(
                 label,
                 on_click=lambda e, k=target_key: self._handle_split_role_button_click(k),
-                disabled=self.split_targets_locked,
+                disabled=self.split_targets_locked or not self.split_enabled,
                 style=ft.ButtonStyle(
                     bgcolor=ft.Colors.PRIMARY if is_enabled else ft.Colors.SURFACE,
                     color=ft.Colors.WHITE if is_enabled else ft.Colors.ON_SURFACE,
@@ -220,7 +226,7 @@ class HarmonyGui:
             controls.append(button)
 
         self.split_role_row.controls = controls
-        self.split_role_row.visible = bool(self.split_target_labels)
+        self.split_role_row.visible = self.split_enabled and bool(self.split_target_labels)
         self.page.update()
 
     def _handle_play_mode_button_click(self, mode: str) -> None:
@@ -235,6 +241,12 @@ class HarmonyGui:
         next_enabled = not currently_enabled
         if self.on_split_role_toggle:
             self.on_split_role_toggle(role, next_enabled)
+
+    def _handle_split_toggle_change(self, enabled: bool) -> None:
+        """Toggle split master switch and notify controller."""
+        self.set_split_enabled(enabled)
+        if self.on_split_toggle:
+            self.on_split_toggle(enabled)
 
     def set_progress(self, progress: float) -> None:
         """Update progress bar value in range [0, 1]."""
@@ -432,10 +444,8 @@ class HarmonyGui:
             self.page.update()
 
     def _apply_font_for_language(self) -> None:
-        """Switch UI font family by language with Google-font fallback behavior."""
-        font_map = {"en": "NotoSans", "ja": "NotoSansJP", "zh": "NotoSansSC"}
-        font_family = font_map.get(self.current_lang, "NotoSans")
-        self.page.theme = ft.Theme(color_scheme_seed="#375ca8", font_family=font_family)
+        """Use system default fonts only for offline-friendly and lightweight builds."""
+        self.page.theme = ft.Theme(color_scheme_seed="#375ca8")
 
     def show_play_view(self) -> None:
         """Navigate to play page programmatically."""
@@ -552,7 +562,7 @@ class HarmonyGui:
         self.lbl_track_title = ft.Text(self.t("play_empty_title"), size=20, weight=ft.FontWeight.BOLD)
         self.lbl_track_sub = ft.Text(self.t("play_empty_sub"))
         
-        self.progress_bar = ft.ProgressBar(value=0.0, color=ft.Colors.PRIMARY, bgcolor=ft.Colors.GREY_200)
+        self.progress_bar = ft.ProgressBar(value=0.0, color=ft.Colors.PRIMARY, bgcolor=ft.Colors.GREY_300)
         self.lbl_time_current = ft.Text("00:00")
         self.lbl_time_total = ft.Text("00:00")
         self.lbl_status = ft.Text("", size=12, color=ft.Colors.GREY_700)
@@ -570,8 +580,6 @@ class HarmonyGui:
         ]
 
         player_info_controls: list[ft.Control] = [
-            self.progress_bar,
-            ft.Row(controls=[self.lbl_time_current, self.lbl_time_total], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Row(
                 controls=status_row_controls,
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -605,6 +613,11 @@ class HarmonyGui:
             self.t("play_mode_repeat_all"),
             on_click=lambda e: self._handle_play_mode_button_click("repeat_all"),
         )
+        self.switch_split_enabled = ft.Switch(
+            label=self.t("play_split_toggle"),
+            value=self.split_enabled,
+            on_change=lambda e: self._handle_split_toggle_change(bool(e.control.value)),
+        )
         self._refresh_play_mode_buttons()
         self.split_role_row = ft.Row(
             controls=[ft.Text(self.t("play_split_label"), size=12, color=ft.Colors.GREY_600)],
@@ -636,8 +649,40 @@ class HarmonyGui:
             self.create_slider_row(self.t("play_stagger"), self.t("play_stagger_desc"), slider_stagger),
         ]
 
+        progress_panel = ft.Card(
+            content=ft.Container(
+                padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                content=ft.Column(
+                    spacing=8,
+                    controls=[
+                        ft.Row(
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            controls=[
+                                ft.Text(self.t("play_progress_label"), size=12, color=ft.Colors.GREY_700),
+                                ft.Row(
+                                    spacing=8,
+                                    controls=[
+                                        self.lbl_time_current,
+                                        ft.Text("/", color=ft.Colors.GREY_600),
+                                        self.lbl_time_total,
+                                    ],
+                                ),
+                            ],
+                        ),
+                        ft.Container(
+                            border_radius=8,
+                            bgcolor=ft.Colors.GREY_100,
+                            padding=ft.padding.symmetric(horizontal=2, vertical=2),
+                            content=self.progress_bar,
+                        ),
+                    ],
+                ),
+            )
+        )
+
         return ft.Column(
             controls=[
+                progress_panel,
                 ft.Card(
                     content=ft.Container(
                         content=ft.Column(
@@ -657,6 +702,7 @@ class HarmonyGui:
                                                 wrap=True,
                                                 spacing=8,
                                             ),
+                                            self.switch_split_enabled,
                                             self.split_role_row,
                                             *player_info_controls,
                                         ]

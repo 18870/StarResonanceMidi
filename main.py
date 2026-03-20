@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 import flet as ft
-import mido
 from pynput.keyboard import Key as PynputKey
 from pynput.keyboard import Listener as KeyboardListener
 
 from core import MidiEngine, TrackSplitPlan
-from gui import HarmonyGui, StatusLevel
+from gui import StarResonanceMidiGui, StatusLevel
+from split_analyzer import SplitAnalysisResult, SplitAnalyzer
 
 
 class AppController:
@@ -25,14 +25,16 @@ class AppController:
     def __init__(self, page: ft.Page):
         """Initialize controller state and connect all event pipelines."""
         self.page = page
-        self.gui = HarmonyGui(page)
+        self.gui = StarResonanceMidiGui(page)
         self.engine = MidiEngine()
+        self.split_analyzer = SplitAnalyzer()
 
         self.current_midi_path: str | None = None
         self.current_track_index: int = -1
         self.playlist_paths: list[str] = []
         self.playback_mode: str = "normal"
         self.max_split_targets: int = 6
+        self.split_enabled: bool = True
         self.split_target_labels: dict[str, str] = {}
         self.split_enabled_roles: set[str] = set()
         self.transition_gap_seconds = self.DEFAULT_TRANSITION_GAP_SECONDS
@@ -40,7 +42,7 @@ class AppController:
         self.play_thread: threading.Thread | None = None
         self.is_playing = False
         self.stop_requested = threading.Event()
-        self.split_targets_cache: dict[str, dict[str, str]] = {}
+        self.split_analysis_cache: dict[str, SplitAnalysisResult] = {}
         self._status_token = 0
         self._pending_progress: tuple[float, float] | None = None
         self._progress_pump_running = False
@@ -66,8 +68,10 @@ class AppController:
         self.gui.on_prev_click = self._handle_prev_click
         self.gui.on_next_click = self._handle_next_click
         self.gui.on_play_mode_change = self._handle_play_mode_change
+        self.gui.on_split_toggle = self._handle_split_toggle
         self.gui.on_split_role_toggle = self._handle_split_role_toggle
         self.gui.set_play_mode(self.playback_mode)
+        self.gui.set_split_enabled(self.split_enabled)
         self.gui.set_split_roles({}, set())
 
     def _bind_engine_callbacks(self) -> None:
@@ -198,6 +202,20 @@ class AppController:
             dict(self.split_target_labels),
             {r for r in self.split_enabled_roles},
         )
+
+    def _handle_split_toggle(self, enabled: bool) -> None:
+        """Enable/disable split playback from main play view."""
+        self.split_enabled = bool(enabled)
+        self.gui.set_split_enabled(self.split_enabled)
+        if not self.split_enabled:
+            self.split_target_labels = {}
+            self.split_enabled_roles = set()
+            self.gui.set_split_roles({}, set())
+            self._show_message(self._tr("msg_split_disabled"), "warning")
+            return
+
+        self._show_message(self._tr("msg_split_enabled"), "info")
+        self.page.run_task(self._analyze_current_track)
 
     def _handle_prev_click(self, _: Any) -> None:
         """Select previous track in normal (non-loop) mode."""
@@ -488,15 +506,23 @@ class AppController:
         if not midi_path:
             return
 
+        if not self.split_enabled:
+            self.split_target_labels = {}
+            self.split_enabled_roles = set()
+            self.gui.set_split_roles({}, set())
+            return
+
         try:
             normalized = str(Path(midi_path).expanduser().resolve(strict=False))
-            target_labels = self.split_targets_cache.get(normalized)
-            if target_labels is None:
-                target_labels = await asyncio.to_thread(self._build_split_targets_for_file, normalized)
-                self.split_targets_cache[normalized] = target_labels
+            analysis = self.split_analysis_cache.get(normalized)
+            if analysis is None:
+                analysis = await asyncio.to_thread(self.split_analyzer.analyze_file, normalized, self.max_split_targets)
+                self.split_analysis_cache[normalized] = analysis
         except Exception as exc:
             self._show_message(self._tr("msg_engine_error", str(exc)), "error")
             return
+
+        target_labels = self._target_labels_from_analysis(analysis)
 
         previous_enabled = set(self.split_enabled_roles)
         available_roles = set(target_labels.keys())
@@ -515,36 +541,36 @@ class AppController:
         else:
             self._show_message(self._tr("msg_track_split_disabled_no_channel"), "warning")
 
-    def _build_split_targets_for_file(self, midi_path: str) -> dict[str, str]:
-        """Build selectable split targets from MIDI channels with activity ranking."""
-        midi = mido.MidiFile(midi_path)
-        channel_activity: dict[int, int] = {}
-        for track in midi.tracks:
-            for msg in track:
-                if getattr(msg, "type", "") != "note_on":
-                    continue
-                if int(getattr(msg, "velocity", 0) or 0) <= 0:
-                    continue
-                channel = int(getattr(msg, "channel", -1) or -1)
-                if channel < 0:
-                    continue
-                channel_activity[channel] = channel_activity.get(channel, 0) + 1
-
-        sorted_channels = sorted(channel_activity.items(), key=lambda item: item[1], reverse=True)
-        limited_channels = sorted_channels[: self.max_split_targets]
-        return {f"ch:{channel + 1}": f"Channel {channel + 1}" for channel, _ in limited_channels}
+    def _target_labels_from_analysis(self, analysis: SplitAnalysisResult) -> dict[str, str]:
+        """Build key->label map from analyzer output for selected channel targets."""
+        selected = set(analysis.selected_targets)
+        labels: dict[str, str] = {}
+        min_confidence = self.split_analyzer.params.thresholds.min_confidence
+        for decision in analysis.decisions:
+            key = f"ch:{decision.channel_1_based}"
+            if key in selected:
+                channel_text = self._tr("play_channel_short_label", decision.channel_1_based)
+                class_key = decision.split_class if decision.confidence >= min_confidence else "unknown"
+                class_text = self._tr(f"play_class_{class_key}")
+                labels[key] = f"{channel_text} · {class_text}"
+        return labels
 
     def _build_split_plan_for_path(self, midi_path: str) -> TrackSplitPlan:
         """Build runtime split plan from channel-based target selection."""
 
+        if not self.split_enabled:
+            return TrackSplitPlan(enabled=False, structured=False, allowed_roles=tuple(), channel_role_map=tuple())
+
         normalized = str(Path(midi_path).expanduser().resolve(strict=False))
-        target_labels = self.split_targets_cache.get(normalized)
-        if target_labels is None:
+        analysis = self.split_analysis_cache.get(normalized)
+        if analysis is None:
             try:
-                target_labels = self._build_split_targets_for_file(normalized)
-                self.split_targets_cache[normalized] = target_labels
+                analysis = self.split_analyzer.analyze_file(normalized, self.max_split_targets)
+                self.split_analysis_cache[normalized] = analysis
             except Exception:
                 return TrackSplitPlan(enabled=False, structured=False, allowed_roles=tuple(), channel_role_map=tuple())
+
+        target_labels = self._target_labels_from_analysis(analysis)
 
         current_keys = set(target_labels.keys())
         enabled_roles = self.split_enabled_roles & current_keys
