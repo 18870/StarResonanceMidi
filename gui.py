@@ -54,6 +54,7 @@ class HarmonyGui:
         
         self.page.window.width = 1000
         self.page.window.height = 800
+        self._apply_window_icon()
         self.page.fonts = dict(self.GOOGLE_FONT_URLS)
         self.page.theme = ft.Theme(color_scheme_seed="#375ca8")
 
@@ -83,6 +84,27 @@ class HarmonyGui:
 
         self.init_ui()
         self._apply_font_for_language()
+
+    def _apply_window_icon(self) -> None:
+        """Set desktop window icon from local assets when supported by runtime."""
+        window_obj = getattr(self.page, "window", None)
+        if window_obj is None or not hasattr(window_obj, "icon"):
+            return
+
+        base_dir = Path(__file__).resolve().parent
+        icon_candidates = [
+            base_dir / "assets" / "icon.ico",
+            base_dir / "assets" / "icon.png",
+        ]
+        icon_path = next((path for path in icon_candidates if path.exists()), None)
+        if icon_path is None:
+            return
+
+        try:
+            window_obj.icon = str(icon_path)
+        except Exception:
+            # Keep UI usable even if icon assignment is unsupported on this platform/version.
+            pass
 
     # ----- Public update APIs -----
     def set_playing_state(self, is_playing: bool) -> None:

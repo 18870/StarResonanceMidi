@@ -3,7 +3,7 @@
 
 MIDI をキーボード入力に変換する Flet GUI ツールです。プレイリスト連続再生に対応しています。
 
-主な用途: MIDI ファイルをキーボード入力へ変換し、「星痕共鳴 / Blue Protocol: Star Resonance / ブループロトコル：スターレゾナンス」での演奏に利用すること。
+主な用途: MIDI ファイルをキーボード入力へ変換し、ブループロトコル：スターレゾナンスでの演奏に利用すること。
 
 **言語ページ：** 
 
@@ -47,7 +47,7 @@ python main.py
 
 ## パッケージング
 
-Windows のンインストーラーは、PyAppify + GitHub Actions で生成しています。
+Windows のンインストーラーは、[Pyappify](https://github.com/ok-oldking/pyappify) + GitHub Actions で生成しています。
 
 
 ## 翻訳コントリビューション

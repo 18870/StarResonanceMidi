@@ -2,9 +2,32 @@ name: Build Windows (PyAppify)
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish tested artifact to GitHub Release"
+        required: true
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag in SemVer format (e.g. v1.2.3), required when publish_release=true"
+        required: false
+        type: string
+      use_cached_bootstrap:
+        description: "Reuse prebuilt PyAppify bootstrap executable from an existing release API URL"
+        required: true
+        type: boolean
+        default: false
+      cached_bootstrap_release_api:
+        description: "Release API URL for use_release (e.g. https://api.github.com/repos/owner/repo/releases/tags/v1.0.0)"
+        required: false
+        type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: pyappify-release-${{ github.event.inputs.release_tag || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   build-windows:
@@ -13,6 +36,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Restore build caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\pnpm-store
+            ~\.cargo\registry
+            ~\.cargo\git
+            pyappify_build
+          key: ${{ runner.os }}-pyappify-${{ hashFiles('pyappify.yml', 'requirements.txt', '.github/workflows/windows-pyappify.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pyappify-
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -28,15 +63,73 @@ jobs:
           Copy-Item "assets/icon.png" "icons/icon.png" -Force
           python -c "from PIL import Image; im=Image.open('assets/icon.png').convert('RGBA'); im.save('icons/icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]); print('icons prepared')"
 
-      - name: Build with PyAppify
+      - name: Build with PyAppify (reuse bootstrap)
+        if: ${{ inputs.use_cached_bootstrap && inputs.cached_bootstrap_release_api != '' }}
+        id: build-app-reuse
+        uses: ok-oldking/pyappify-action@master
+        with:
+          version: "v1.0.42"
+          use_release: ${{ inputs.cached_bootstrap_release_api }}
+
+      - name: Build with PyAppify (full build)
+        if: ${{ !inputs.use_cached_bootstrap || inputs.cached_bootstrap_release_api == '' }}
         id: build-app
         uses: ok-oldking/pyappify-action@master
         with:
           version: "v1.0.42"
+
+      - name: Generate SHA256 for offline installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "pyappify_dist/*-release-setup.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "Offline installer not found in pyappify_dist"
+          }
+          Get-FileHash $installer.FullName -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $($installer.Name)" } |
+            Set-Content "pyappify_dist/$($installer.Name).sha256"
 
       - name: Upload offline installer artifact
         uses: actions/upload-artifact@v5
         with:
           name: StarResonanceMidi-offline-installer
           retention-days: 14
-          path: pyappify_dist/*-release-setup.exe
+          path: |
+            pyappify_dist/*-release-setup.exe
+            pyappify_dist/*.sha256
+
+  publish-release:
+    if: ${{ inputs.publish_release }}
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate release tag input
+        shell: bash
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [[ -z "$TAG" ]]; then
+            echo "release_tag is required when publish_release=true"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_tag must match vX.Y.Z, got: $TAG"
+            exit 1
+          fi
+
+      - name: Download tested artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: StarResonanceMidi-offline-installer
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          generate_release_notes: true
+          files: |
+            release-assets/*-release-setup.exe
+            release-assets/*.sha256

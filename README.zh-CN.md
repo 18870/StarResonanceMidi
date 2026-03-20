@@ -3,7 +3,7 @@
 
 这是一个将 MIDI 映射为键盘输入的 Flet 图形工具，支持播放列表顺序播放。
 
-主要用途：将 MIDI 文件映射到键盘，用于「星痕共鸣 / Blue Protocol: Star Resonance / ブループロトコル：スターレゾナンス」内演奏。
+主要用途：将 MIDI 文件映射到键盘，用于星痕共鸣内演奏。
 
 **语言版本：** 
 
@@ -47,7 +47,7 @@ python main.py
 
 ## 打包说明
 
-Windows 安装包由 PyAppify + GitHub Actions 生成。
+Windows 安装包由 [Pyappify](https://github.com/ok-oldking/pyappify) + GitHub Actions 生成。
 
 
 ## 翻译贡献说明

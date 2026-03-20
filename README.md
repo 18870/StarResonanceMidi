@@ -48,7 +48,7 @@ python main.py
 
 ## Packaging
 
-Windows installer builds are produced with PyAppify via GitHub Actions.
+Windows installer builds are produced with [Pyappify](https://github.com/ok-oldking/pyappify) via GitHub Actions.
 
 
 ## Translation Contributions
