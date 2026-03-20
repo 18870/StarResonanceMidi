@@ -1,0 +1,38 @@
+name: Translation update
+description: Add or improve translations in locales and docs
+labels: [translation, documentation]
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Target language code
+      description: ISO code (for example fr, de, ko)
+      placeholder: fr
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Which files/sections are covered?
+      placeholder: locales.json + README.fr.md
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Terminology notes
+      description: Explain naming/wording decisions if needed
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Required checks
+      options:
+        - label: I preserved placeholder tokens exactly (for example {}, {:.1f}).
+          required: true
+        - label: I kept locale keys consistent across all locales.
+          required: true
+        - label: I ran `python scripts/check_locales.py`.
+          required: true
+        - label: If I added a README translation, I updated language links.
+          required: true

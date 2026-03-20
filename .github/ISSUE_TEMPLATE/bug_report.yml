@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible bug in StarResonanceMidi
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this issue.
+        Please provide enough detail to reproduce the behavior.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line summary of the bug
+      placeholder: Playback stops after first track in playlist
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide exact steps
+      placeholder: |
+        1. Open app
+        2. Import 3 MIDI files
+        3. Press Play
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, package versions if known
+      placeholder: macOS 14, Python 3.11, flet 0.x
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant output or screenshots
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues before creating this report.
+          required: true
+        - label: I confirm this report does not include copyrighted music/MIDI content files.
+          required: true

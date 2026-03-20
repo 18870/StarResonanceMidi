@@ -1,0 +1,34 @@
+name: Legal or compliance notice
+description: Report copyright/trademark/license concerns
+labels: [legal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to report legal/compliance concerns.
+        Do not post personal data that should remain private.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: Potential trademark misuse in README section
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Describe the concern and affected files/lines
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I understand maintainers may request additional evidence.
+          required: true

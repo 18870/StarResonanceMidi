@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose an improvement for StarResonanceMidi
+labels: [enhancement]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line feature summary
+      placeholder: Add keyboard shortcut to skip current track
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What pain point does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe desired behavior and UX
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and discussions first.
+          required: true
+        - label: This request does not require shipping copyrighted songs/MIDI assets.
+          required: true

@@ -1,0 +1,106 @@
+name: Build Windows (Nuitka)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
+
+      - name: Prepare icon (optional)
+        shell: pwsh
+        run: |
+          if (!(Test-Path "assets")) { New-Item -ItemType Directory -Path "assets" | Out-Null }
+          if (!(Test-Path "assets/icon.ico") -and (Test-Path "assets/icon.png")) {
+            python -c "from PIL import Image; im=Image.open('assets/icon.png').convert('RGBA'); im.save('assets/icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]); print('icon converted')"
+          }
+
+      - name: Build standalone
+        shell: pwsh
+        run: |
+          $iconArg = ""
+          if (Test-Path "assets/icon.ico") { $iconArg = "--windows-icon-from-ico=assets/icon.ico" }
+          python -m nuitka `
+            --standalone `
+            --follow-imports `
+            --assume-yes-for-downloads `
+            --enable-plugin=tk-inter `
+            --include-package=flet `
+            --include-package=mido `
+            --include-package=pynput `
+            --include-data-file=locales.json=locales.json `
+            --windows-uac-admin `
+            --windows-console-mode=disable `
+            $iconArg `
+            --output-dir=build/standalone `
+            main.py
+
+      - name: Zip standalone
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build/standalone/main.dist/*" -DestinationPath "StarResonanceMidi-windows-standalone.zip"
+
+      - name: Build onefile
+        shell: pwsh
+        run: |
+          $iconArg = ""
+          if (Test-Path "assets/icon.ico") { $iconArg = "--windows-icon-from-ico=assets/icon.ico" }
+          python -m nuitka `
+            --onefile `
+            --follow-imports `
+            --assume-yes-for-downloads `
+            --enable-plugin=tk-inter `
+            --include-package=flet `
+            --include-package=mido `
+            --include-package=pynput `
+            --include-data-file=locales.json=locales.json `
+            --windows-uac-admin `
+            --windows-console-mode=disable `
+            $iconArg `
+            --output-dir=build/onefile `
+            main.py
+
+      - name: Upload standalone artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarResonanceMidi-windows-standalone
+          path: StarResonanceMidi-windows-standalone.zip
+
+      - name: Upload onefile artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarResonanceMidi-windows-onefile
+          path: build/onefile/main.exe
+
+      - name: Publish release assets (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            StarResonanceMidi-windows-standalone.zip
+            build/onefile/main.exe
+          generate_release_notes: true
