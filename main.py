@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import flet as ft
+import mido
 from pynput.keyboard import Key as PynputKey
 from pynput.keyboard import Listener as KeyboardListener
 
-from core import MidiEngine, MidiRoleAnalysis, MidiRoleAnalyzer, TrackSplitPlan
+from core import MidiEngine, TrackSplitPlan
 from gui import HarmonyGui, StatusLevel
 
 
@@ -31,13 +32,15 @@ class AppController:
         self.current_track_index: int = -1
         self.playlist_paths: list[str] = []
         self.playback_mode: str = "normal"
-        self.smart_split_enabled: bool = False
+        self.max_split_targets: int = 6
+        self.split_target_labels: dict[str, str] = {}
+        self.split_enabled_roles: set[str] = set()
         self.transition_gap_seconds = self.DEFAULT_TRANSITION_GAP_SECONDS
 
         self.play_thread: threading.Thread | None = None
         self.is_playing = False
         self.stop_requested = threading.Event()
-        self.role_analysis_cache: dict[str, MidiRoleAnalysis] = {}
+        self.split_targets_cache: dict[str, dict[str, str]] = {}
         self._status_token = 0
         self._pending_progress: tuple[float, float] | None = None
         self._progress_pump_running = False
@@ -58,13 +61,14 @@ class AppController:
         self.gui.on_stagger_change = self._handle_stagger_change
         self.gui.on_library_track_select = self._handle_library_track_select
         self.gui.on_library_play_click = self._handle_library_play_click
+        self.gui.on_library_remove_click = self._handle_library_remove_click
         self.gui.on_status_close = self._handle_status_close
         self.gui.on_prev_click = self._handle_prev_click
         self.gui.on_next_click = self._handle_next_click
         self.gui.on_play_mode_change = self._handle_play_mode_change
-        self.gui.on_split_toggle = self._handle_split_toggle
+        self.gui.on_split_role_toggle = self._handle_split_role_toggle
         self.gui.set_play_mode(self.playback_mode)
-        self.gui.set_smart_split_enabled(self.smart_split_enabled)
+        self.gui.set_split_roles({}, set())
 
     def _bind_engine_callbacks(self) -> None:
         """Bind engine callbacks to UI-safe handlers."""
@@ -177,15 +181,23 @@ class AppController:
         self.playback_mode = mode
         self._refresh_track_navigation_state()
 
-    def _handle_split_toggle(self, enabled: bool) -> None:
-        """Enable or disable smart split master switch."""
-        self.smart_split_enabled = bool(enabled)
-        self.gui.set_smart_split_enabled(self.smart_split_enabled)
-        if self.smart_split_enabled:
-            self._show_message(self._tr("msg_smart_split_enabled"), "info")
-            self.page.run_task(self._analyze_current_track)
+    def _handle_split_role_toggle(self, role: str, enable: bool) -> None:
+        """Toggle one split target, ensuring at least one remains enabled."""
+        if role not in self.split_target_labels:
+            return
+
+        if enable:
+            self.split_enabled_roles.add(role)
         else:
-            self._show_message(self._tr("msg_smart_split_disabled"), "warning")
+            if role in self.split_enabled_roles and len(self.split_enabled_roles) == 1:
+                self._show_message(self._tr("msg_split_role_keep_one"), "warning")
+                return
+            self.split_enabled_roles.discard(role)
+
+        self.gui.set_split_roles(
+            dict(self.split_target_labels),
+            {r for r in self.split_enabled_roles},
+        )
 
     def _handle_prev_click(self, _: Any) -> None:
         """Select previous track in normal (non-loop) mode."""
@@ -278,6 +290,66 @@ class AppController:
         """Select a track from library and jump to play view."""
         self._handle_library_track_select(track_path)
         self.gui.show_play_view()
+
+    def _handle_library_remove_click(self, selected_paths: list[str]) -> None:
+        """Remove selected tracks from playlist without deleting local files."""
+        if not selected_paths:
+            self._show_message(self._tr("msg_remove_select_at_least_one"), "warning")
+            return
+
+        selected_keys = {self._normalize_path_key(path) for path in selected_paths}
+        old_playlist = list(self.playlist_paths)
+        old_count = len(old_playlist)
+        if old_count == 0:
+            self._show_message(self._tr("msg_remove_select_at_least_one"), "warning")
+            return
+
+        current_path = self.current_midi_path
+        current_removed = bool(current_path and self._normalize_path_key(current_path) in selected_keys)
+        current_old_index = self.current_track_index if 0 <= self.current_track_index < old_count else 0
+
+        self.playlist_paths = [
+            path for path in old_playlist if self._normalize_path_key(path) not in selected_keys
+        ]
+        removed_count = old_count - len(self.playlist_paths)
+        if removed_count <= 0:
+            self._show_message(self._tr("msg_remove_select_at_least_one"), "warning")
+            return
+
+        if current_removed and self.is_playing:
+            self._request_stop("msg_stopping_playlist")
+
+        if not self.playlist_paths:
+            self.current_midi_path = None
+            self.current_track_index = -1
+            self.split_target_labels = {}
+            self.split_enabled_roles = set()
+            self.gui.set_split_roles({}, set())
+            self.gui.set_track_info(self._tr("play_empty_title"), self._tr("play_empty_sub"))
+            self.gui.set_playback_snapshot(0.0, 0.0, 0.0)
+            self.gui.set_library_tracks([], current_track_path=None)
+            self._refresh_track_navigation_state()
+            self._show_message(self._tr("msg_removed_count", removed_count), "info")
+            return
+
+        if current_removed:
+            new_index = min(current_old_index, len(self.playlist_paths) - 1)
+            self.current_track_index = new_index
+            self.current_midi_path = self.playlist_paths[new_index]
+        elif current_path is not None and current_path in self.playlist_paths:
+            self.current_track_index = self.playlist_paths.index(current_path)
+            self.current_midi_path = current_path
+        else:
+            self.current_track_index = 0
+            self.current_midi_path = self.playlist_paths[0]
+
+        self.gui.set_library_tracks(self.playlist_paths, current_track_path=self.current_midi_path)
+        first_name = Path(self.current_midi_path).name if self.current_midi_path else ""
+        subtitle = self._tr("msg_playlist_count", len(self.playlist_paths))
+        self.gui.set_track_info(f"[{self.current_track_index + 1}/{len(self.playlist_paths)}] {first_name}", subtitle)
+        self._refresh_track_navigation_state()
+        self._show_message(self._tr("msg_removed_count", removed_count), "info")
+        self.page.run_task(self._analyze_current_track)
 
     # ----- Playback Worker -----
     def _play_playlist_worker(self) -> None:
@@ -411,52 +483,90 @@ class AppController:
         self.page.run_task(self._analyze_current_track)
 
     async def _analyze_current_track(self) -> None:
-        """Analyze selected MIDI structure and surface split-readiness status."""
+        """Analyze selected MIDI and prepare default channel split targets."""
         midi_path = self.current_midi_path
         if not midi_path:
             return
 
         try:
             normalized = str(Path(midi_path).expanduser().resolve(strict=False))
-            analysis = self.role_analysis_cache.get(normalized)
-            if analysis is None:
-                analysis = await asyncio.to_thread(MidiRoleAnalyzer.analyze_file, normalized)
-                self.role_analysis_cache[normalized] = analysis
+            target_labels = self.split_targets_cache.get(normalized)
+            if target_labels is None:
+                target_labels = await asyncio.to_thread(self._build_split_targets_for_file, normalized)
+                self.split_targets_cache[normalized] = target_labels
         except Exception as exc:
             self._show_message(self._tr("msg_engine_error", str(exc)), "error")
             return
 
-        if not self.smart_split_enabled:
-            return
+        previous_enabled = set(self.split_enabled_roles)
+        available_roles = set(target_labels.keys())
+        enabled_roles = previous_enabled & available_roles
+        if not enabled_roles:
+            enabled_roles = set(available_roles) if available_roles else set()
 
-        if analysis.structured:
-            self._show_message(self._tr("msg_track_split_ready", analysis.confidence), "info")
+        self.split_target_labels = target_labels
+        self.split_enabled_roles = enabled_roles
+        self.gui.set_split_roles(
+            dict(self.split_target_labels),
+            {r for r in self.split_enabled_roles},
+        )
+        if target_labels:
+            self._show_message(self._tr("msg_track_split_ready_count", len(target_labels)), "info")
         else:
-            reason_text = self._tr(f"msg_track_split_reason_{analysis.reason}")
-            self._show_message(self._tr("msg_track_split_disabled", reason_text), "warning")
+            self._show_message(self._tr("msg_track_split_disabled_no_channel"), "warning")
+
+    def _build_split_targets_for_file(self, midi_path: str) -> dict[str, str]:
+        """Build selectable split targets from MIDI channels with activity ranking."""
+        midi = mido.MidiFile(midi_path)
+        channel_activity: dict[int, int] = {}
+        for track in midi.tracks:
+            for msg in track:
+                if getattr(msg, "type", "") != "note_on":
+                    continue
+                if int(getattr(msg, "velocity", 0) or 0) <= 0:
+                    continue
+                channel = int(getattr(msg, "channel", -1) or -1)
+                if channel < 0:
+                    continue
+                channel_activity[channel] = channel_activity.get(channel, 0) + 1
+
+        sorted_channels = sorted(channel_activity.items(), key=lambda item: item[1], reverse=True)
+        limited_channels = sorted_channels[: self.max_split_targets]
+        return {f"ch:{channel + 1}": f"Channel {channel + 1}" for channel, _ in limited_channels}
 
     def _build_split_plan_for_path(self, midi_path: str) -> TrackSplitPlan:
-        """Build runtime split plan from cached analysis and master toggle."""
-        if not self.smart_split_enabled:
-            return TrackSplitPlan(enabled=False, structured=False, allowed_roles=("keyboard", "bass", "guitar", "drum"), channel_role_map=tuple())
+        """Build runtime split plan from channel-based target selection."""
 
         normalized = str(Path(midi_path).expanduser().resolve(strict=False))
-        analysis = self.role_analysis_cache.get(normalized)
-        if analysis is None:
+        target_labels = self.split_targets_cache.get(normalized)
+        if target_labels is None:
             try:
-                analysis = MidiRoleAnalyzer.analyze_file(normalized)
-                self.role_analysis_cache[normalized] = analysis
+                target_labels = self._build_split_targets_for_file(normalized)
+                self.split_targets_cache[normalized] = target_labels
             except Exception:
-                return TrackSplitPlan(enabled=False, structured=False, allowed_roles=("keyboard", "bass", "guitar", "drum"), channel_role_map=tuple())
+                return TrackSplitPlan(enabled=False, structured=False, allowed_roles=tuple(), channel_role_map=tuple())
 
-        if not analysis.structured:
-            return TrackSplitPlan(enabled=False, structured=False, allowed_roles=("keyboard", "bass", "guitar", "drum"), channel_role_map=analysis.channel_role_map)
+        current_keys = set(target_labels.keys())
+        enabled_roles = self.split_enabled_roles & current_keys
+        if not enabled_roles:
+            enabled_roles = current_keys
+
+        channel_role_map: list[tuple[int, str]] = []
+        for key in current_keys:
+            if not key.startswith("ch:"):
+                continue
+            try:
+                channel = int(key.split(":", 1)[1]) - 1
+            except ValueError:
+                continue
+            if channel >= 0:
+                channel_role_map.append((channel, key))
 
         return TrackSplitPlan(
-            enabled=True,
-            structured=True,
-            allowed_roles=("keyboard", "bass", "guitar", "drum"),
-            channel_role_map=analysis.channel_role_map,
+            enabled=bool(enabled_roles),
+            structured=bool(channel_role_map),
+            allowed_roles=tuple(sorted(enabled_roles)),
+            channel_role_map=tuple(sorted(channel_role_map, key=lambda item: item[0])),
         )
 
     @staticmethod

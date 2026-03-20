@@ -21,7 +21,7 @@ TrackInfoCallback = Callable[[str, str], None]
 ErrorCallback = Callable[[str], None]
 FinishCallback = Callable[[], None]
 
-TrackRole = Literal["keyboard", "bass", "guitar", "drum"]
+TrackRole = str
 
 
 @dataclass(frozen=True)
@@ -56,16 +56,19 @@ class TrackSplitPlan:
 
     enabled: bool
     structured: bool
-    allowed_roles: tuple[TrackRole, ...]
+    allowed_roles: tuple[str, ...]
     channel_role_map: tuple[tuple[int, TrackRole], ...]
 
 
 class MidiRoleAnalyzer:
     """Rule-based MIDI track role analyzer with safety gating."""
 
-    MIN_CONFIDENCE = 0.60
-    MIN_MARGIN = 0.15
-    MAX_CONFLICT_RATIO = 0.45
+    # Balanced defaults for real-world downloaded MIDIs.
+    MIN_CONFIDENCE = 0.48
+    MIN_MARGIN = 0.12
+    MAX_CONFLICT_RATIO = 0.55
+    MAX_AMBIGUOUS_TRACK_RATIO = 0.60
+    MAX_HIGH_CONFLICT_TRACK_RATIO = 0.60
 
     DRUM_KEYWORDS = {"drum", "perc", "percussion", "kick", "snare", "hihat", "tom", "cymbal"}
     BASS_KEYWORDS = {"bass", "contra", "upright", "sub"}
@@ -107,16 +110,18 @@ class MidiRoleAnalyzer:
             channel_role_map.append((channel, best_role))
 
         overall_conf = sum(d.confidence for d in decisions) / len(decisions)
-        min_margin = min(d.margin for d in decisions)
-        max_conflict = max(d.conflict_ratio for d in decisions)
+        ambiguous_count = sum(1 for d in decisions if d.margin < cls.MIN_MARGIN)
+        high_conflict_count = sum(1 for d in decisions if d.conflict_ratio > cls.MAX_CONFLICT_RATIO)
+        ambiguous_ratio = ambiguous_count / len(decisions)
+        high_conflict_ratio = high_conflict_count / len(decisions)
 
         if overall_conf < cls.MIN_CONFIDENCE:
             reason: Literal["ok", "no_tracks", "low_confidence", "ambiguous", "high_conflict"] = "low_confidence"
             structured = False
-        elif min_margin < cls.MIN_MARGIN:
+        elif ambiguous_ratio > cls.MAX_AMBIGUOUS_TRACK_RATIO:
             reason = "ambiguous"
             structured = False
-        elif max_conflict > cls.MAX_CONFLICT_RATIO:
+        elif high_conflict_ratio > cls.MAX_HIGH_CONFLICT_TRACK_RATIO:
             reason = "high_conflict"
             structured = False
         else:
@@ -146,6 +151,7 @@ class MidiRoleAnalyzer:
         note_events = 0
         channel_hist: dict[int, int] = {}
         program_hist: dict[int, int] = {}
+        note_values: list[int] = []
 
         for msg in track:
             if getattr(msg, "is_meta", False) and getattr(msg, "type", "") == "track_name":
@@ -162,6 +168,9 @@ class MidiRoleAnalyzer:
                 note_events += 1
                 channel = int(getattr(msg, "channel", 0) or 0)
                 channel_hist[channel] = channel_hist.get(channel, 0) + 1
+                note = getattr(msg, "note", None)
+                if isinstance(note, int):
+                    note_values.append(note)
 
         if note_events == 0 and not program_hist and not track_name.strip():
             return None
@@ -187,6 +196,19 @@ class MidiRoleAnalyzer:
             scores["bass"] += 0.80 * (bass_hits / total_program_events)
             scores["guitar"] += 0.80 * (guitar_hits / total_program_events)
             scores["keyboard"] += 0.65 * (keyboard_hits / total_program_events)
+
+        # Register-range hints from played note distribution.
+        if note_values:
+            avg_note = sum(note_values) / len(note_values)
+            low_ratio = sum(1 for n in note_values if n <= 52) / len(note_values)
+            high_ratio = sum(1 for n in note_values if n >= 72) / len(note_values)
+
+            if avg_note <= 50 or low_ratio >= 0.55:
+                scores["bass"] += 0.28
+            if 52 <= avg_note <= 82:
+                scores["keyboard"] += 0.10
+            if 50 <= avg_note <= 76 and high_ratio < 0.35:
+                scores["guitar"] += 0.12
 
         # Track-name keyword hints.
         name_tokens = cls._tokenize(track_name)
@@ -219,7 +241,18 @@ class MidiRoleAnalyzer:
             dominant = bucket_values[0]
             conflict_ratio = 1.0 - (dominant / bucket_total)
 
-        confidence = max(0.0, min(1.0, best_score))
+        # Instability penalties for tracks that likely mix instruments.
+        if total_program_events > 0:
+            dominant_program_ratio = max(program_hist.values()) / total_program_events
+            if len(program_hist) >= 3 and dominant_program_ratio < 0.60:
+                conflict_ratio += 0.15
+        if total_channel_events > 0 and dominant_channel_ratio < 0.55:
+            conflict_ratio += 0.10
+
+        conflict_ratio = max(0.0, min(1.0, conflict_ratio))
+
+        stability_factor = 1.0 - (0.25 * conflict_ratio)
+        confidence = max(0.0, min(1.0, best_score * stability_factor))
         normalized_name = track_name.strip() or f"Track {track_index + 1}"
 
         return TrackRoleDecision(
@@ -489,27 +522,18 @@ class MidiEngine:
         self._stop_event.set()
 
     @staticmethod
-    def _resolve_message_role(msg: mido.Message, split_plan: TrackSplitPlan) -> TrackRole:
-        """Resolve a message role by channel hints and safe fallback rules."""
+    def _resolve_message_role(msg: object, split_plan: TrackSplitPlan) -> str:
+        """Resolve a message split key using channel mapping and fallback key."""
         channel = int(getattr(msg, "channel", -1) or -1)
-        if channel == 9:
-            return "drum"
-
         channel_role_map = dict(split_plan.channel_role_map)
         mapped = channel_role_map.get(channel)
-        if mapped in {"keyboard", "bass", "guitar", "drum"}:
+        if isinstance(mapped, str) and mapped:
             return mapped
+        if channel >= 0:
+            return f"ch:{channel + 1}"
+        return "unknown"
 
-        program = int(getattr(msg, "program", -1) or -1)
-        if 32 <= program <= 39:
-            return "bass"
-        if 24 <= program <= 31:
-            return "guitar"
-        if 0 <= program <= 7:
-            return "keyboard"
-        return "keyboard"
-
-    def _should_skip_message_by_role(self, msg: mido.Message, split_plan: TrackSplitPlan) -> bool:
+    def _should_skip_message_by_role(self, msg: object, split_plan: TrackSplitPlan) -> bool:
         """Return True when note events should be suppressed by active role filter."""
         msg_type = getattr(msg, "type", "")
         if msg_type != "note_on":

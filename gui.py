@@ -32,7 +32,8 @@ UiEventHandler = Callable[[Any], None]
 ValueChangeHandler = Callable[[float], None]
 TrackSelectHandler = Callable[[str], None]
 ModeChangeHandler = Callable[[str], None]
-BoolChangeHandler = Callable[[bool], None]
+RoleToggleHandler = Callable[[str, bool], None]
+TracksRemoveHandler = Callable[[list[str]], None]
 StatusLevel = Literal["info", "warning", "error"]
 STATUS_COLOR_MAP: dict[StatusLevel, str] = {
     "info": ft.Colors.GREY_700,
@@ -71,11 +72,12 @@ class HarmonyGui:
         self.on_stagger_change: ValueChangeHandler | None = None
         self.on_library_track_select: TrackSelectHandler | None = None
         self.on_library_play_click: TrackSelectHandler | None = None
+        self.on_library_remove_click: TracksRemoveHandler | None = None
         self.on_status_close: UiEventHandler | None = None
         self.on_prev_click: UiEventHandler | None = None
         self.on_next_click: UiEventHandler | None = None
         self.on_play_mode_change: ModeChangeHandler | None = None
-        self.on_split_toggle: BoolChangeHandler | None = None
+        self.on_split_role_toggle: RoleToggleHandler | None = None
 
         # Internal control refs used by update APIs.
         self.btn_play: ft.FloatingActionButton | None = None
@@ -84,8 +86,12 @@ class HarmonyGui:
         self.btn_mode_normal: ft.Button | None = None
         self.btn_mode_repeat_one: ft.Button | None = None
         self.btn_mode_repeat_all: ft.Button | None = None
+        self.split_role_row: ft.Row | None = None
         self.current_play_mode: str = "normal"
-        self.smart_split_enabled: bool = False
+        self.split_target_buttons: dict[str, ft.Button] = {}
+        self.split_target_labels: dict[str, str] = {}
+        self.enabled_split_roles: set[str] = set()
+        self.split_targets_locked: bool = False
         self.progress_bar: ft.ProgressBar | None = None
         self.lbl_time_current: ft.Text | None = None
         self.lbl_time_total: ft.Text | None = None
@@ -94,9 +100,13 @@ class HarmonyGui:
         self.lbl_status: ft.Text | None = None
         self.btn_status_close: ft.IconButton | None = None
         self.library_tracks: list[str] = []
+        self.library_selected_paths: set[str] = set()
         self.current_track_path: str | None = None
         self.library_list_view: ft.ListView | None = None
         self.library_search_field: ft.TextField | None = None
+        self.btn_library_remove: ft.Button | None = None
+        self.btn_library_select_all: ft.Button | None = None
+        self.btn_library_invert: ft.Button | None = None
 
         self.init_ui()
         self._apply_font_for_language()
@@ -125,7 +135,9 @@ class HarmonyGui:
         """Toggle play button icon between play/stop."""
         if self.btn_play:
             self.btn_play.icon = ft.Icons.STOP if is_playing else ft.Icons.PLAY_ARROW
-            self.page.update()
+        # Keep split target selection stable while current song is playing.
+        self.split_targets_locked = bool(is_playing)
+        self._refresh_split_role_buttons()
 
     def set_track_info(self, title: str, subtitle: str = "") -> None:
         """Update current track title/subtitle."""
@@ -150,9 +162,11 @@ class HarmonyGui:
         self.current_play_mode = mode if mode in allowed else "normal"
         self._refresh_play_mode_buttons()
 
-    def set_smart_split_enabled(self, enabled: bool) -> None:
-        """Sync smart-split master toggle state from controller."""
-        self.smart_split_enabled = bool(enabled)
+    def set_split_roles(self, target_labels: dict[str, str], enabled_roles: set[str]) -> None:
+        """Sync split targets and enabled state from controller."""
+        self.split_target_labels = dict(target_labels)
+        self.enabled_split_roles = set(enabled_roles)
+        self._refresh_split_role_buttons()
 
     def _refresh_play_mode_buttons(self) -> None:
         """Highlight selected mode button and reset others."""
@@ -174,11 +188,53 @@ class HarmonyGui:
 
         self.page.update()
 
+    def _refresh_split_role_buttons(self) -> None:
+        """Refresh split-target button list and selected state."""
+        if self.split_role_row is None:
+            return
+
+        controls: list[ft.Control] = [ft.Text(self.t("play_split_label"), size=12, color=ft.Colors.GREY_600)]
+        self.split_target_buttons = {}
+
+        def split_sort_key(target_key: str) -> tuple[int, str]:
+            if target_key.startswith("ch:"):
+                raw = target_key.split(":", 1)[1]
+                if raw.isdigit():
+                    return (int(raw), "")
+            return (10_000, target_key)
+
+        for target_key in sorted(self.split_target_labels.keys(), key=split_sort_key):
+            label = self.split_target_labels[target_key]
+            is_enabled = target_key in self.enabled_split_roles
+            button = ft.Button(
+                label,
+                on_click=lambda e, k=target_key: self._handle_split_role_button_click(k),
+                disabled=self.split_targets_locked,
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.PRIMARY if is_enabled else ft.Colors.SURFACE,
+                    color=ft.Colors.WHITE if is_enabled else ft.Colors.ON_SURFACE,
+                    side=ft.BorderSide(1, ft.Colors.PRIMARY),
+                ),
+            )
+            self.split_target_buttons[target_key] = button
+            controls.append(button)
+
+        self.split_role_row.controls = controls
+        self.split_role_row.visible = bool(self.split_target_labels)
+        self.page.update()
+
     def _handle_play_mode_button_click(self, mode: str) -> None:
         """Update UI mode selection and notify controller."""
         self.set_play_mode(mode)
         if self.on_play_mode_change:
             self.on_play_mode_change(mode)
+
+    def _handle_split_role_button_click(self, role: str) -> None:
+        """Toggle one role selection and notify controller."""
+        currently_enabled = role in self.enabled_split_roles
+        next_enabled = not currently_enabled
+        if self.on_split_role_toggle:
+            self.on_split_role_toggle(role, next_enabled)
 
     def set_progress(self, progress: float) -> None:
         """Update progress bar value in range [0, 1]."""
@@ -231,9 +287,57 @@ class HarmonyGui:
     def set_library_tracks(self, paths: list[str], current_track_path: str | None = None) -> None:
         """Update library list from imported MIDI paths."""
         self.library_tracks = list(paths)
+        self.library_selected_paths &= set(self.library_tracks)
         if current_track_path is not None:
             self.current_track_path = current_track_path
         self._refresh_library_list()
+
+    def _handle_library_select_toggle(self, track_path: str, selected: bool) -> None:
+        """Toggle one track selection used by batch remove."""
+        if selected:
+            self.library_selected_paths.add(track_path)
+        else:
+            self.library_selected_paths.discard(track_path)
+        self._refresh_library_action_state()
+
+    def _get_filtered_library_tracks(self) -> list[str]:
+        """Return tracks currently visible under search filter."""
+        query = ""
+        if self.library_search_field and isinstance(self.library_search_field.value, str):
+            query = self.library_search_field.value.strip().lower()
+        if not query:
+            return list(self.library_tracks)
+        return [path for path in self.library_tracks if query in Path(path).name.lower()]
+
+    def _handle_library_select_all_click(self) -> None:
+        """Select all currently visible tracks."""
+        self.library_selected_paths.update(self._get_filtered_library_tracks())
+        self._refresh_library_list()
+
+    def _handle_library_invert_selection_click(self) -> None:
+        """Invert selection for currently visible tracks only."""
+        visible_tracks = self._get_filtered_library_tracks()
+        visible_set = set(visible_tracks)
+        selected_visible = self.library_selected_paths & visible_set
+        self.library_selected_paths = (self.library_selected_paths - visible_set) | (visible_set - selected_visible)
+        self._refresh_library_list()
+
+    def _handle_library_remove_selected_click(self) -> None:
+        """Request controller to remove selected tracks from playlist."""
+        if self.on_library_remove_click:
+            self.on_library_remove_click(list(self.library_selected_paths))
+
+    def _refresh_library_action_state(self) -> None:
+        """Enable or disable batch actions according to current selection."""
+        if self.btn_library_remove is not None:
+            self.btn_library_remove.disabled = len(self.library_selected_paths) == 0
+        visible_tracks = self._get_filtered_library_tracks()
+        has_visible = len(visible_tracks) > 0
+        if self.btn_library_select_all is not None:
+            self.btn_library_select_all.disabled = not has_visible
+        if self.btn_library_invert is not None:
+            self.btn_library_invert.disabled = not has_visible
+        self.page.update()
 
     @staticmethod
     def format_seconds(seconds: float) -> str:
@@ -414,6 +518,7 @@ class HarmonyGui:
                 continue
 
             is_current_track = track_path == self.current_track_path
+            is_selected = track_path in self.library_selected_paths
             trailing_control: ft.Control
             if is_current_track:
                 trailing_control = ft.IconButton(
@@ -427,7 +532,10 @@ class HarmonyGui:
 
             controls.append(
                 ft.ListTile(
-                    leading=ft.Icon(ft.Icons.MUSIC_NOTE),
+                    leading=ft.Checkbox(
+                        value=is_selected,
+                        on_change=lambda e, p=track_path: self._handle_library_select_toggle(p, bool(e.control.value)),
+                    ),
                     title=ft.Text(f"▶ {filename}" if is_current_track else filename),
                     subtitle=ft.Text(track_path),
                     trailing=trailing_control,
@@ -436,7 +544,7 @@ class HarmonyGui:
             )
 
         self.library_list_view.controls = controls
-        self.page.update()
+        self._refresh_library_action_state()
 
     # ----- View builders -----
     def build_play_view(self) -> ft.Column:
@@ -498,6 +606,13 @@ class HarmonyGui:
             on_click=lambda e: self._handle_play_mode_button_click("repeat_all"),
         )
         self._refresh_play_mode_buttons()
+        self.split_role_row = ft.Row(
+            controls=[ft.Text(self.t("play_split_label"), size=12, color=ft.Colors.GREY_600)],
+            wrap=True,
+            spacing=8,
+            visible=False,
+        )
+        self._refresh_split_role_buttons()
         self.btn_prev = ft.IconButton(
             ft.Icons.SKIP_PREVIOUS,
             icon_size=30,
@@ -542,6 +657,7 @@ class HarmonyGui:
                                                 wrap=True,
                                                 spacing=8,
                                             ),
+                                            self.split_role_row,
                                             *player_info_controls,
                                         ]
                                     )
@@ -565,6 +681,22 @@ class HarmonyGui:
             on_change=lambda e: self._refresh_library_list(),
         )
         self.library_list_view = ft.ListView(expand=True, spacing=10, controls=[])
+        self.btn_library_select_all = ft.Button(
+            self.t("lib_select_all"),
+            icon=ft.Icons.SELECT_ALL,
+            on_click=lambda e: self._handle_library_select_all_click(),
+        )
+        self.btn_library_invert = ft.Button(
+            self.t("lib_invert_selection"),
+            icon=ft.Icons.SWAP_HORIZ,
+            on_click=lambda e: self._handle_library_invert_selection_click(),
+        )
+        self.btn_library_remove = ft.Button(
+            self.t("lib_remove_selected"),
+            icon=ft.Icons.DELETE_SWEEP,
+            disabled=True,
+            on_click=lambda e: self._handle_library_remove_selected_click(),
+        )
         self._refresh_library_list()
 
         return ft.Column(
@@ -572,10 +704,21 @@ class HarmonyGui:
                 ft.Text(self.t("lib_title"), size=24, weight=ft.FontWeight.BOLD),
                 self.library_search_field,
                 self.library_list_view,
-                ft.FloatingActionButton(
-                    icon=ft.Icons.ADD, tooltip=self.t("lib_import"), bgcolor=ft.Colors.PRIMARY, foreground_color=ft.Colors.WHITE,
-                    on_click=lambda e: self.on_import_click(e) if self.on_import_click else None
-                )
+                ft.Row(
+                    controls=[
+                        self.btn_library_select_all,
+                        self.btn_library_invert,
+                        self.btn_library_remove,
+                        ft.FloatingActionButton(
+                            icon=ft.Icons.ADD,
+                            tooltip=self.t("lib_import"),
+                            bgcolor=ft.Colors.PRIMARY,
+                            foreground_color=ft.Colors.WHITE,
+                            on_click=lambda e: self.on_import_click(e) if self.on_import_click else None,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
             ], expand=True, spacing=20
         )
 
@@ -595,11 +738,6 @@ class HarmonyGui:
                     )
                 ),
                 ft.Switch(label=self.t("set_dark"), value=self.page.theme_mode == ft.ThemeMode.DARK, on_change=self.toggle_theme),
-                ft.Switch(
-                    label=self.t("set_smart_split"),
-                    value=self.smart_split_enabled,
-                    on_change=lambda e: self.on_split_toggle(bool(e.control.value)) if self.on_split_toggle and e.control.value is not None else None,
-                ),
                 ft.Button(self.t("set_hotkey"), icon=ft.Icons.KEYBOARD),
                 ft.Text(self.t("set_version", APP_VERSION), size=12, color=ft.Colors.GREY_500),
                 ft.Text(self.t("set_project_meta"), size=12, color=ft.Colors.GREY_500)
