@@ -343,14 +343,18 @@ class SplitAnalyzer:
 
         kept: list[ChannelDecision] = []
         for decision in decisions:
-            if decision.split_class == "unknown":
-                continue
-
             note_ratio = decision.note_count / total_notes
             weak_by_ratio = note_ratio < self.params.continuity.min_segment_note_ratio
             weak_by_conf = decision.confidence < self.params.continuity.weak_branch_merge_threshold
-            if weak_by_ratio and weak_by_conf:
+            
+            # Only filter out unknown channels that are also very weak (both low ratio AND low confidence)
+            if decision.split_class == "unknown" and weak_by_ratio and weak_by_conf:
                 continue
+            
+            # Filter out classified channels that are weak
+            if decision.split_class != "unknown" and weak_by_ratio and weak_by_conf:
+                continue
+                
             kept.append(decision)
 
         if kept:
