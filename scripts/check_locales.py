@@ -1,12 +1,3 @@
-"""Author: etanolo (https://github.com/etanolo)
-Purpose: Validate locale key consistency across all languages.
-Constraints:
-- Keep validation deterministic and side-effect free.
-- Treat key-set mismatch as CI failure (exit code 1).
-- Use root locale file locales.json as single source of truth.
-License: AGPL-3.0-or-later
-"""
-
 from __future__ import annotations
 
 import json

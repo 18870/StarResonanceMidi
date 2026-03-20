@@ -1,12 +1,3 @@
-"""Author: etanolo (https://github.com/etanolo)
-Purpose: GUI layer for StarResonanceMidi, providing localized controls for MIDI-to-keyboard gameplay performance.
-Constraints:
-- Keep UI updates in view APIs; controller owns orchestration and playback flow.
-- Keep all translatable strings in locale resources and access through translation keys.
-- Preserve public hooks and update method signatures for integration compatibility.
-License: AGPL-3.0-or-later
-"""
-
 import json
 import locale as py_locale
 from pathlib import Path
@@ -26,10 +17,10 @@ def load_locales(filepath: str = "locales.json") -> dict[str, dict[str, str]]:
                 return data
             return FALLBACK_LOCALES
     except FileNotFoundError:
-        print(f"警告：找不到语言包文件 {filepath}，将使用备用空字典。")
+        print(f"Warning: File not found {filepath}, using fallback empty dictionary.")
         return FALLBACK_LOCALES
     except json.JSONDecodeError:
-        print(f"警告：{filepath} 格式错误，请检查 JSON 语法。")
+        print(f"Warning: {filepath} has invalid JSON format, please check the syntax.")
         return FALLBACK_LOCALES
 
 LOCALES = load_locales()
@@ -228,7 +219,7 @@ class HarmonyGui:
 
     def change_language(self, e: Any) -> None:
         """Rebuild localized views after language selection changes."""
-        lang_map = {"简体中文": "zh", "English": "en", "日本語": "ja"}
+        lang_map = {"English": "en", "日本語": "ja", "简体中文": "zh"}
         new_lang = lang_map.get(e.control.value, "en")
         
         if self.current_lang != new_lang:

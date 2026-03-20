@@ -1,12 +1,3 @@
-"""Author: etanolo (https://github.com/etanolo)
-Purpose: StarResonanceMidi engine that maps MIDI notes and timing into keyboard actions.
-Constraints:
-- Keep playback loop deterministic and callback-driven for UI integration.
-- Avoid direct UI dependencies; communicate through typed callbacks only.
-- Keep timing and key-mapping behavior stable unless explicitly changing engine logic.
-License: AGPL-3.0-or-later
-"""
-
 import mido
 import random
 import threading

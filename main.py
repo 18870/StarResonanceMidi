@@ -1,12 +1,3 @@
-"""Author: etanolo (https://github.com/etanolo)
-Purpose: Controller entry for StarResonanceMidi, mapping MIDI playback flow to keyboard output orchestration.
-Constraints:
-- Keep orchestration logic in controller layer; avoid embedding engine internals here.
-- Keep user-facing text localized via locale keys (no hardcoded UI copy for app flow).
-- Preserve callback signatures used by GUI and engine integration.
-License: AGPL-3.0-or-later
-"""
-
 import asyncio
 import threading
 import time
@@ -213,7 +204,6 @@ class AppController:
                 display_title = f"[{idx}/{total_tracks}] {track_name}"
                 self._run_on_ui(self.gui.set_track_info, display_title, midi_path)
 
-                # 阻塞直至单曲播放结束或被停止。
                 try:
                     self.engine.play(midi_path)
                 except Exception as exc:

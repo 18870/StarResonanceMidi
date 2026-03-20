@@ -1,8 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Security reports
-    url: https://github.com/etanolo/StarResonanceMidi/security/policy
-    about: Please report vulnerabilities according to SECURITY.md
   - name: General questions
     url: https://github.com/etanolo/StarResonanceMidi/discussions
     about: Ask usage or setup questions in Discussions
