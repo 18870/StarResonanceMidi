@@ -12,15 +12,6 @@ on:
         description: "Release tag in SemVer format (e.g. v1.2.3), required when publish_release=true"
         required: false
         type: string
-      use_cached_bootstrap:
-        description: "Reuse prebuilt PyAppify bootstrap executable from an existing release API URL"
-        required: true
-        type: boolean
-        default: false
-      cached_bootstrap_release_api:
-        description: "Release API URL for use_release (e.g. https://api.github.com/repos/owner/repo/releases/tags/v1.0.0)"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -37,18 +28,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Restore build caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~\AppData\Local\pnpm-store
-            ~\.cargo\registry
-            ~\.cargo\git
-            pyappify_build
-          key: ${{ runner.os }}-pyappify-${{ hashFiles('pyappify.yml', 'requirements.txt', '.github/workflows/windows-pyappify.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-pyappify-
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -63,16 +42,7 @@ jobs:
           Copy-Item "assets/icon.png" "icons/icon.png" -Force
           python -c "from PIL import Image; im=Image.open('assets/icon.png').convert('RGBA'); im.save('icons/icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]); print('icons prepared')"
 
-      - name: Build with PyAppify (reuse bootstrap)
-        if: ${{ inputs.use_cached_bootstrap && inputs.cached_bootstrap_release_api != '' }}
-        id: build-app-reuse
-        uses: ok-oldking/pyappify-action@master
-        with:
-          version: "v1.0.42"
-          use_release: ${{ inputs.cached_bootstrap_release_api }}
-
-      - name: Build with PyAppify (full build)
-        if: ${{ !inputs.use_cached_bootstrap || inputs.cached_bootstrap_release_api == '' }}
+      - name: Build with PyAppify
         id: build-app
         uses: ok-oldking/pyappify-action@master
         with:
