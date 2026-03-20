@@ -28,7 +28,9 @@ class AppController:
         self.engine = MidiEngine()
 
         self.current_midi_path: str | None = None
+        self.current_track_index: int = -1
         self.playlist_paths: list[str] = []
+        self.playback_mode: str = "normal"
         self.transition_gap_seconds = self.DEFAULT_TRANSITION_GAP_SECONDS
 
         self.play_thread: threading.Thread | None = None
@@ -55,6 +57,10 @@ class AppController:
         self.gui.on_library_track_select = self._handle_library_track_select
         self.gui.on_library_play_click = self._handle_library_play_click
         self.gui.on_status_close = self._handle_status_close
+        self.gui.on_prev_click = self._handle_prev_click
+        self.gui.on_next_click = self._handle_next_click
+        self.gui.on_play_mode_change = self._handle_play_mode_change
+        self.gui.set_play_mode(self.playback_mode)
 
     def _bind_engine_callbacks(self) -> None:
         """Bind engine callbacks to UI-safe handlers."""
@@ -160,24 +166,98 @@ class AppController:
         self._status_token += 1
         self.gui.clear_status_message()
 
+    def _handle_play_mode_change(self, mode: str) -> None:
+        """Apply playback mode selected from UI."""
+        if mode not in {"normal", "repeat_one", "repeat_all"}:
+            return
+        self.playback_mode = mode
+        self._refresh_track_navigation_state()
+
+    def _handle_prev_click(self, _: Any) -> None:
+        """Select previous track in normal (non-loop) mode."""
+        self._navigate_track(-1)
+
+    def _handle_next_click(self, _: Any) -> None:
+        """Select next track in normal (non-loop) mode."""
+        self._navigate_track(1)
+
+    def _current_track_index(self) -> int:
+        """Return current track index in playlist, defaulting to head."""
+        if not self.playlist_paths:
+            return 0
+        if 0 <= self.current_track_index < len(self.playlist_paths):
+            return self.current_track_index
+        if self.current_midi_path in self.playlist_paths:
+            return self.playlist_paths.index(self.current_midi_path)
+        return 0
+
+    def _refresh_track_navigation_state(self) -> None:
+        """Update previous/next enabled state based on current index and total tracks."""
+        total = len(self.playlist_paths)
+        idx = self._current_track_index()
+        if total <= 1:
+            can_prev = False
+            can_next = False
+        elif self.playback_mode == "repeat_all":
+            can_prev = True
+            can_next = True
+        else:
+            can_prev = idx > 0
+            can_next = idx < total - 1
+        self.gui.set_track_navigation_state(can_prev, can_next)
+
+    def _navigate_track(self, step: int) -> None:
+        """Move current track by step in normal mode and optionally restart playback."""
+        if not self.playlist_paths:
+            self._refresh_track_navigation_state()
+            return
+
+        current_idx = self._current_track_index()
+        total = len(self.playlist_paths)
+
+        if self.playback_mode == "repeat_all" and total > 1:
+            target_idx = (current_idx + step) % total
+        else:
+            target_idx = current_idx + step
+
+        if target_idx < 0 or target_idx >= total:
+            self._refresh_track_navigation_state()
+            return
+
+        target_path = self.playlist_paths[target_idx]
+        self._handle_library_track_select(target_path)
+
+        if self.is_playing:
+            self._request_stop("msg_stopping_playlist")
+            self.page.run_task(self._restart_after_track_change)
+
+    async def _restart_after_track_change(self) -> None:
+        """Wait for current playback worker to stop, then restart from selected track."""
+        thread = self.play_thread
+        if thread and thread.is_alive():
+            await asyncio.to_thread(thread.join)
+
+        if not self.is_playing:
+            self._handle_play_click(None)
+
     def _handle_library_track_select(self, track_path: str) -> None:
-        """Move selected library track to playlist head and sync play view."""
+        """Select a track by index without reordering playlist."""
         if not track_path:
             return
 
         if track_path not in self.playlist_paths:
             return
 
-        remaining = [path for path in self.playlist_paths if path != track_path]
-        self.playlist_paths = [track_path, *remaining]
+        self.current_track_index = self.playlist_paths.index(track_path)
         self.current_midi_path = track_path
 
-        self.gui.set_library_tracks(self.playlist_paths)
+        self.gui.set_library_tracks(self.playlist_paths, current_track_path=self.current_midi_path)
         self.gui.set_playback_snapshot(0.0, 0.0, 0.0)
 
         first_name = Path(track_path).name
         subtitle = self._tr("msg_playlist_count", len(self.playlist_paths))
-        self.gui.set_track_info(f"[1/{len(self.playlist_paths)}] {first_name}", subtitle)
+        self.gui.set_track_info(f"[{self.current_track_index + 1}/{len(self.playlist_paths)}] {first_name}", subtitle)
+        self._refresh_track_navigation_state()
 
     def _handle_library_play_click(self, track_path: str) -> None:
         """Select a track from library and jump to play view."""
@@ -186,44 +266,69 @@ class AppController:
 
     # ----- Playback Worker -----
     def _play_playlist_worker(self) -> None:
-        """Play all tracks sequentially with optional transition gaps."""
-        playlist = list(self.playlist_paths)
-        total_tracks = len(playlist)
+        """Play tracks according to current playback mode."""
+        if not self.playlist_paths:
+            return
+
+        had_error = False
+        completed = False
+        current_idx = self._current_track_index()
 
         try:
-            for idx, midi_path in enumerate(playlist, start=1):
+            while not self.stop_requested.is_set():
+                midi_path = self.playlist_paths[current_idx]
+
                 if self.stop_requested.is_set():
                     break
 
                 if not Path(midi_path).is_file():
                     self._run_on_ui(self._show_message, self._tr("msg_engine_error", f"File not found: {midi_path}"), "error")
+                    had_error = True
                     break
 
                 self.current_midi_path = midi_path
+                self.current_track_index = current_idx
                 track_name = Path(midi_path).name
-                display_title = f"[{idx}/{total_tracks}] {track_name}"
+                display_title = f"[{self.current_track_index + 1}/{len(self.playlist_paths)}] {track_name}"
                 self._run_on_ui(self.gui.set_track_info, display_title, midi_path)
+                self._run_on_ui(self.gui.set_library_tracks, self.playlist_paths, self.current_midi_path)
+                self._run_on_ui(self._refresh_track_navigation_state)
 
                 try:
                     self.engine.play(midi_path)
                 except Exception as exc:
                     self._run_on_ui(self._show_message, self._tr("msg_engine_error", str(exc)), "error")
+                    had_error = True
                     break
 
                 if self.stop_requested.is_set():
                     break
 
-                if idx < total_tracks:
+                next_idx: int | None
+                if self.playback_mode == "repeat_one":
+                    next_idx = current_idx
+                elif self.playback_mode == "repeat_all":
+                    next_idx = (current_idx + 1) % len(self.playlist_paths)
+                else:
+                    next_idx = current_idx + 1 if current_idx + 1 < len(self.playlist_paths) else None
+
+                if next_idx is None:
+                    completed = True
+                    break
+
+                if self.playback_mode != "repeat_one":
                     self._run_on_ui(
                         self._show_message,
-                        self._tr("msg_track_finished_next", idx, self.transition_gap_seconds),
+                        self._tr("msg_track_finished_next", self.current_track_index + 1, self.transition_gap_seconds),
                     )
                     if not self._interruptible_sleep(self.transition_gap_seconds):
                         break
 
+                current_idx = next_idx
+
             if self.stop_requested.is_set():
                 self._run_on_ui(self._show_message, self._tr("msg_playlist_stopped"), "warning")
-            else:
+            elif not had_error and completed:
                 self._run_on_ui(self._show_message, self._tr("msg_playlist_completed"))
         finally:
             self._run_on_ui(self._set_idle_state)
@@ -242,6 +347,7 @@ class AppController:
         self.is_playing = False
         self.play_thread = None
         self.gui.set_playing_state(False)
+        self._refresh_track_navigation_state()
 
     # ----- Import Flow -----
     async def _pick_midi_files(self) -> None:
@@ -253,14 +359,26 @@ class AppController:
             return
 
         existing = list(self.playlist_paths)
-        existing_set = set(existing)
-        appended = [path for path in selected_paths if path not in existing_set]
+        normalized_existing = {self._normalize_path_key(path): path for path in existing}
+
+        appended: list[str] = []
+        for raw_path in selected_paths:
+            normalized_path = str(Path(raw_path).expanduser().resolve(strict=False))
+            key = self._normalize_path_key(normalized_path)
+            if key in normalized_existing:
+                continue
+            normalized_existing[key] = normalized_path
+            appended.append(normalized_path)
+
         self.playlist_paths = [*existing, *appended]
 
         if self.current_midi_path not in self.playlist_paths:
-            self.current_midi_path = self.playlist_paths[0]
+            self.current_track_index = 0 if self.playlist_paths else -1
+            self.current_midi_path = self.playlist_paths[0] if self.playlist_paths else None
+        elif self.current_midi_path is not None:
+            self.current_track_index = self.playlist_paths.index(self.current_midi_path)
 
-        self.gui.set_library_tracks(self.playlist_paths)
+        self.gui.set_library_tracks(self.playlist_paths, current_track_path=self.current_midi_path)
 
         current_index = 1
         if self.current_midi_path and self.current_midi_path in self.playlist_paths:
@@ -271,7 +389,13 @@ class AppController:
         self.gui.set_track_info(f"[{current_index}/{len(self.playlist_paths)}] {first_name}", subtitle)
         self.gui.set_progress(0.0)
         self.gui.set_time_labels(0.0, 0.0)
+        self._refresh_track_navigation_state()
         self._show_message(self._tr("msg_imported_count", len(appended)))
+
+    @staticmethod
+    def _normalize_path_key(path: str) -> str:
+        """Normalize a path for robust deduplication across case and separators."""
+        return str(Path(path).expanduser().resolve(strict=False)).casefold()
 
     def _pick_with_native_dialog(self) -> list[str]:
         """Pick MIDI files via native dialog to avoid runtime-specific Flet picker issues."""

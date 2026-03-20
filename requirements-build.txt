@@ -1,4 +1,0 @@
-nuitka
-ordered-set
-zstandard
-pillow

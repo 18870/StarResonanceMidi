@@ -29,6 +29,7 @@ LOCALES = load_locales()
 UiEventHandler = Callable[[Any], None]
 ValueChangeHandler = Callable[[float], None]
 TrackSelectHandler = Callable[[str], None]
+ModeChangeHandler = Callable[[str], None]
 StatusLevel = Literal["info", "warning", "error"]
 STATUS_COLOR_MAP: dict[StatusLevel, str] = {
     "info": ft.Colors.GREY_700,
@@ -68,9 +69,18 @@ class HarmonyGui:
         self.on_library_track_select: TrackSelectHandler | None = None
         self.on_library_play_click: TrackSelectHandler | None = None
         self.on_status_close: UiEventHandler | None = None
+        self.on_prev_click: UiEventHandler | None = None
+        self.on_next_click: UiEventHandler | None = None
+        self.on_play_mode_change: ModeChangeHandler | None = None
 
         # Internal control refs used by update APIs.
         self.btn_play: ft.FloatingActionButton | None = None
+        self.btn_prev: ft.IconButton | None = None
+        self.btn_next: ft.IconButton | None = None
+        self.btn_mode_normal: ft.Button | None = None
+        self.btn_mode_repeat_one: ft.Button | None = None
+        self.btn_mode_repeat_all: ft.Button | None = None
+        self.current_play_mode: str = "normal"
         self.progress_bar: ft.ProgressBar | None = None
         self.lbl_time_current: ft.Text | None = None
         self.lbl_time_total: ft.Text | None = None
@@ -79,6 +89,7 @@ class HarmonyGui:
         self.lbl_status: ft.Text | None = None
         self.btn_status_close: ft.IconButton | None = None
         self.library_tracks: list[str] = []
+        self.current_track_path: str | None = None
         self.library_list_view: ft.ListView | None = None
         self.library_search_field: ft.TextField | None = None
 
@@ -92,12 +103,10 @@ class HarmonyGui:
             return
 
         base_dir = Path(__file__).resolve().parent
-        icon_candidates = [
-            base_dir / "assets" / "icon.ico",
-            base_dir / "assets" / "icon.png",
-        ]
-        icon_path = next((path for path in icon_candidates if path.exists()), None)
+        icon_path = base_dir / "assets" / "icon.ico"
         if icon_path is None:
+            return
+        if not icon_path.exists():
             return
 
         try:
@@ -119,6 +128,48 @@ class HarmonyGui:
             self.lbl_track_title.value = title
             self.lbl_track_sub.value = subtitle
             self.page.update()
+
+    def set_track_navigation_state(self, can_prev: bool, can_next: bool) -> None:
+        """Enable or disable previous/next controls by playlist boundaries."""
+        if self.btn_prev is not None:
+            self.btn_prev.disabled = not can_prev
+            self.btn_prev.tooltip = self.t("play_prev") if can_prev else self.t("play_prev_unavailable")
+        if self.btn_next is not None:
+            self.btn_next.disabled = not can_next
+            self.btn_next.tooltip = self.t("play_next") if can_next else self.t("play_next_unavailable")
+        self.page.update()
+
+    def set_play_mode(self, mode: str) -> None:
+        """Set current play mode and refresh mode button visual state."""
+        allowed = {"normal", "repeat_one", "repeat_all"}
+        self.current_play_mode = mode if mode in allowed else "normal"
+        self._refresh_play_mode_buttons()
+
+    def _refresh_play_mode_buttons(self) -> None:
+        """Highlight selected mode button and reset others."""
+        button_map: dict[str, ft.Button | None] = {
+            "normal": self.btn_mode_normal,
+            "repeat_one": self.btn_mode_repeat_one,
+            "repeat_all": self.btn_mode_repeat_all,
+        }
+
+        for mode_key, button in button_map.items():
+            if button is None:
+                continue
+            is_selected = mode_key == self.current_play_mode
+            button.style = ft.ButtonStyle(
+                bgcolor=ft.Colors.PRIMARY if is_selected else ft.Colors.SURFACE,
+                color=ft.Colors.WHITE if is_selected else ft.Colors.ON_SURFACE,
+                side=ft.BorderSide(1, ft.Colors.PRIMARY),
+            )
+
+        self.page.update()
+
+    def _handle_play_mode_button_click(self, mode: str) -> None:
+        """Update UI mode selection and notify controller."""
+        self.set_play_mode(mode)
+        if self.on_play_mode_change:
+            self.on_play_mode_change(mode)
 
     def set_progress(self, progress: float) -> None:
         """Update progress bar value in range [0, 1]."""
@@ -168,9 +219,11 @@ class HarmonyGui:
                 self.btn_status_close.visible = False
             self.page.update()
 
-    def set_library_tracks(self, paths: list[str]) -> None:
+    def set_library_tracks(self, paths: list[str], current_track_path: str | None = None) -> None:
         """Update library list from imported MIDI paths."""
         self.library_tracks = list(paths)
+        if current_track_path is not None:
+            self.current_track_path = current_track_path
         self._refresh_library_list()
 
     @staticmethod
@@ -346,15 +399,14 @@ class HarmonyGui:
             query = self.library_search_field.value.strip().lower()
 
         controls: list[ft.Control] = []
-        first_track = self.library_tracks[0] if self.library_tracks else None
         for track_path in self.library_tracks:
             filename = Path(track_path).name
             if query and query not in filename.lower():
                 continue
 
-            is_first_track = track_path == first_track
+            is_current_track = track_path == self.current_track_path
             trailing_control: ft.Control
-            if is_first_track:
+            if is_current_track:
                 trailing_control = ft.IconButton(
                     icon=ft.Icons.PLAY_CIRCLE_FILLED,
                     icon_color=ft.Colors.PRIMARY,
@@ -367,7 +419,7 @@ class HarmonyGui:
             controls.append(
                 ft.ListTile(
                     leading=ft.Icon(ft.Icons.MUSIC_NOTE),
-                    title=ft.Text(filename),
+                    title=ft.Text(f"▶ {filename}" if is_current_track else filename),
                     subtitle=ft.Text(track_path),
                     trailing=trailing_control,
                     on_click=lambda e, p=track_path: self.on_library_track_select(p) if self.on_library_track_select else None,
@@ -421,7 +473,35 @@ class HarmonyGui:
         self.btn_play = ft.FloatingActionButton(
             icon=ft.Icons.PLAY_ARROW,
             bgcolor=ft.Colors.PRIMARY,
+            foreground_color=ft.Colors.WHITE,
             on_click=lambda e: self.on_play_click(e) if self.on_play_click else None
+        )
+        self.btn_mode_normal = ft.Button(
+            self.t("play_mode_normal"),
+            on_click=lambda e: self._handle_play_mode_button_click("normal"),
+        )
+        self.btn_mode_repeat_one = ft.Button(
+            self.t("play_mode_repeat_one"),
+            on_click=lambda e: self._handle_play_mode_button_click("repeat_one"),
+        )
+        self.btn_mode_repeat_all = ft.Button(
+            self.t("play_mode_repeat_all"),
+            on_click=lambda e: self._handle_play_mode_button_click("repeat_all"),
+        )
+        self._refresh_play_mode_buttons()
+        self.btn_prev = ft.IconButton(
+            ft.Icons.SKIP_PREVIOUS,
+            icon_size=30,
+            tooltip=self.t("play_prev_unavailable"),
+            disabled=True,
+            on_click=lambda e: self.on_prev_click(e) if self.on_prev_click else None,
+        )
+        self.btn_next = ft.IconButton(
+            ft.Icons.SKIP_NEXT,
+            icon_size=30,
+            tooltip=self.t("play_next_unavailable"),
+            disabled=True,
+            on_click=lambda e: self.on_next_click(e) if self.on_next_click else None,
         )
 
         tuning_controls: list[ft.Control] = [
@@ -441,7 +521,21 @@ class HarmonyGui:
                                 ft.ListTile(leading=ft.Icon(ft.Icons.AUDIOTRACK, color=ft.Colors.PRIMARY), title=self.lbl_track_title, subtitle=self.lbl_track_sub),
                                 ft.Container(
                                     padding=ft.Padding.only(left=20, right=20, bottom=20),
-                                    content=ft.Column(controls=player_info_controls)
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Text(self.t("play_mode_label"), size=12, color=ft.Colors.GREY_600),
+                                                    self.btn_mode_normal,
+                                                    self.btn_mode_repeat_one,
+                                                    self.btn_mode_repeat_all,
+                                                ],
+                                                wrap=True,
+                                                spacing=8,
+                                            ),
+                                            *player_info_controls,
+                                        ]
+                                    )
                                 )
                             ]
                         ),
@@ -449,7 +543,7 @@ class HarmonyGui:
                     )
                 ),
                 ft.Card(content=ft.Container(content=ft.Column(controls=tuning_controls), padding=20)),
-                ft.Row(controls=[ft.IconButton(ft.Icons.SKIP_PREVIOUS, icon_size=30), self.btn_play, ft.IconButton(ft.Icons.SKIP_NEXT, icon_size=30)], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
+                ft.Row(controls=[self.btn_prev, self.btn_play, self.btn_next], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
             ], expand=True, spacing=20, scroll=ft.ScrollMode.AUTO
         )
 
@@ -470,7 +564,7 @@ class HarmonyGui:
                 self.library_search_field,
                 self.library_list_view,
                 ft.FloatingActionButton(
-                    icon=ft.Icons.ADD, tooltip=self.t("lib_import"), bgcolor=ft.Colors.PRIMARY,
+                    icon=ft.Icons.ADD, tooltip=self.t("lib_import"), bgcolor=ft.Colors.PRIMARY, foreground_color=ft.Colors.WHITE,
                     on_click=lambda e: self.on_import_click(e) if self.on_import_click else None
                 )
             ], expand=True, spacing=20
@@ -493,6 +587,7 @@ class HarmonyGui:
                 ),
                 ft.Switch(label=self.t("set_dark"), value=self.page.theme_mode == ft.ThemeMode.DARK, on_change=self.toggle_theme),
                 ft.Button(self.t("set_hotkey"), icon=ft.Icons.KEYBOARD),
-                ft.Text(self.t("set_version"), size=12, color=ft.Colors.GREY_500)
+                ft.Text(self.t("set_version"), size=12, color=ft.Colors.GREY_500),
+                ft.Text(self.t("set_project_meta"), size=12, color=ft.Colors.GREY_500)
             ], expand=True, spacing=15
         )
