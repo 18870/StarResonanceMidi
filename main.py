@@ -118,7 +118,7 @@ class AppController:
             return
 
         def on_press(key: Any) -> None:
-            if key == PynputKey.esc:
+            if key in (PynputKey.backspace, PynputKey.esc):
                 self._request_stop("msg_hotkey_stopped")
 
         try:
