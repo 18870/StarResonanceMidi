@@ -84,7 +84,7 @@ class MidiRoleAnalyzer:
     @classmethod
     def analyze_file(cls, midi_path: str) -> MidiRoleAnalysis:
         """Analyze MIDI tracks and decide whether split is reliable enough."""
-        midi = mido.MidiFile(midi_path)
+        midi = mido.MidiFile(midi_path, clip=True)
         decisions: list[TrackRoleDecision] = []
 
         for idx, track in enumerate(midi.tracks):
@@ -465,7 +465,7 @@ class MidiEngine:
         self._safe_emit(self.on_play_state_change, True)
 
         try:
-            mid = mido.MidiFile(midi_path)
+            mid = mido.MidiFile(midi_path, clip=True)
         except Exception as e:
             err = str(e)
             self._safe_emit(self.on_error, err)

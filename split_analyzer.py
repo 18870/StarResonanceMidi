@@ -54,7 +54,7 @@ class SplitAnalyzer:
         self.classifier = InstrumentClassifier()
 
     def analyze_file(self, midi_path: str, max_targets: int | None = None) -> SplitAnalysisResult:
-        midi = mido.MidiFile(midi_path)
+        midi = mido.MidiFile(midi_path, clip=True)
         channel_features = self._collect_channel_features(midi)
         decisions = tuple(self._classify_channel(feature) for feature in channel_features)
         feature_map = {feature.channel_1_based: feature for feature in channel_features}
