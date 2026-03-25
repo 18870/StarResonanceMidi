@@ -14,7 +14,7 @@ import flet as ft
 from pynput.keyboard import Key as PynputKey
 from pynput.keyboard import Listener as KeyboardListener
 
-from core import MidiEngine, TrackSplitPlan, KEYBIND_VALUE_MAP
+from core import MidiEngine, TrackSplitPlan, KEYBIND_MAP
 from gui import StarResonanceMidiGui, StatusLevel
 from split_analyzer import SplitAnalysisResult, SplitAnalyzer
 
@@ -192,7 +192,7 @@ class AppController:
 
     def _handle_keybind_change(self, action: str, display_label: str) -> None:
         """Propagate keybind change from UI to engine."""
-        key_value = KEYBIND_VALUE_MAP.get(display_label)
+        key_value = KEYBIND_MAP.get(display_label)
         if key_value is None:
             return
         self.engine.set_keybind(action, key_value)

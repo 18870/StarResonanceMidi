@@ -24,14 +24,12 @@ OCTAVE_KEYS = [
     'q', 'i', 'w', 'o', 'e', 'r', 'p', 't', '[', 'y', ']', 'u'
 ]
 
-# Keybind option list: (display_label, pynput_key_value)
-KEYBIND_OPTIONS: list[tuple[str, str | Key]] = [
-    ("Ctrl", Key.ctrl_l),
-    ("Shift", Key.shift_l),
-    ("-", "-"),
-    ("=", "="),
-]
-KEYBIND_VALUE_MAP: dict[str, str | Key] = {k: v for k, v in KEYBIND_OPTIONS}
+KEYBIND_MAP: dict[str, str | Key] = {
+    "Ctrl": Key.ctrl_l,
+    "Shift": Key.shift_l,
+    "-": "-",
+    "=": "=",
+}
 
 # Abstract transition graph: action-based, independent of actual keybinds.
 _TRANSITION_GRAPH: dict[str, list[tuple[str, str]]] = {

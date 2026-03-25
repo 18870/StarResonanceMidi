@@ -12,7 +12,7 @@ from typing import Any, Callable, Literal, cast
 import flet as ft
 
 from app_info import APP_NAME, APP_VERSION
-from core import KEYBIND_OPTIONS
+from core import KEYBIND_MAP
 
 FALLBACK_LOCALES: dict[str, dict[str, str]] = {"en": {}, "ja": {}, "zh": {}}
 
@@ -613,19 +613,19 @@ class StarResonanceMidiGui:
         slider_hesitation_max.on_change = lambda e: self.on_hesitation_max_change(float(e.control.value)) if self.on_hesitation_max_change and e.control.value is not None else None
 
         # Keybind dropdowns.
-        keybind_options = [ft.dropdown.Option(label) for label, _ in KEYBIND_OPTIONS]
+        keybind_options = [ft.dropdown.Option(label) for label in KEYBIND_MAP]
 
         dd_key_ctrl = ft.Dropdown(
             width=120,
             options=list(keybind_options),
             value="Ctrl",
-            on_text_change=lambda e, a="ctrl": self.on_keybind_change(a, e.control.value) if self.on_keybind_change and e.control.value else None,
+            on_select=lambda e: self.on_keybind_change("ctrl", e.control.value) if self.on_keybind_change and e.control.value else None,
         )
         dd_key_shift = ft.Dropdown(
             width=120,
             options=list(keybind_options),
             value="Shift",
-            on_text_change=lambda e, a="shift": self.on_keybind_change(a, e.control.value) if self.on_keybind_change and e.control.value else None,
+            on_select=lambda e: self.on_keybind_change("shift", e.control.value) if self.on_keybind_change and e.control.value else None,
         )
 
         # Connect play button to controller hook.
